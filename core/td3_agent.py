@@ -130,7 +130,7 @@ class Agent:
                                     None, None, self.replay_buffer,
                                     1, 256,
                                     discount=self.args.gamma, tau=self.args.tau, policy_noise=self.args.TD3_noise,
-                                    train_OFN_use_multi_actor=self.args.random_choose, pop=self.pop)
+                                    train_OFN_use_multi_actor=self.args.random_choose)
             episode_timesteps += 1
             state = next_state
         Q_espisde_mean = 0
