@@ -185,10 +185,41 @@ class Actor(nn.Module):
             count += param.numel()
         return count
 
+class Q_network(nn.Module):
+    
+    def __init__(self, args, l1=400, l2=300, l3=300):
+        super(Q_network, self).__init__()
+        self.args = args
+        self.l1 = l1
+        # Construct input interface (Hidden Layer 1)
+        self.w_l1 = nn.Linear(args.state_dim+args.action_dim, l1)
+        # Hidden Layer 2
+        self.w_l2 = nn.Linear(l1, l2)
+        if self.args.use_ln:
+            self.lnorm1 = LayerNorm(l1)
+            self.lnorm2 = LayerNorm(l2)
+        # Out
+        self.w_out = nn.Linear(l3, 1)
+        self.w_out.weight.data.mul_(0.1)
+        self.w_out.bias.data.mul_(0.1)
+        self.to(self.args.device)
+
+    def forward(self, input_):
+        # Hidden Layer 1 (Input Interface)
+        out = self.w_l1(input_)
+        if self.args.use_ln:out = self.lnorm1(out)
+        out = F.leaky_relu(out)
+        # Hidden Layer 2
+        out = self.w_l2(out)
+        if self.args.use_ln: out = self.lnorm2(out)
+        out = F.leaky_relu(out)
+        # Output interface
+        out = self.w_out(out)
+        return out
 
 class Critic(nn.Module):
 
-    def __init__(self, args):
+    def __init__(self, args, n_nets = 2):
         super(Critic, self).__init__()
         self.args = args
 
@@ -196,64 +227,23 @@ class Critic(nn.Module):
         l2 = 300;
         l3 = l2
 
-        # Construct input interface (Hidden Layer 1)
-        self.w_l1 = nn.Linear(args.state_dim+args.action_dim, l1)
-        # Hidden Layer 2
+        self.Q1_nets = []
+        self.Q2_nets = []
 
-        self.w_l2 = nn.Linear(l1, l2)
-        if self.args.use_ln:
-            self.lnorm1 = LayerNorm(l1)
-            self.lnorm2 = LayerNorm(l2)
+        for i in range(n_nets):
+            self.Q1_network = Q_network(args, l1, l2, l3)
+            self.Q2_network = Q_network(args, l1, l2, l3)
+        
+            self.Q1_nets.append(self.Q1_network)
+            self.Q2_nets.append(self.Q2_network)
 
-        # Out
-        self.w_out = nn.Linear(l3, 1)
-        self.w_out.weight.data.mul_(0.1)
-        self.w_out.bias.data.mul_(0.1)
-
-        self.w_l3 = nn.Linear(args.state_dim+args.action_dim, l1)
-        # Hidden Layer 2
-        self.w_l4 = nn.Linear(l1, l2)
-        if self.args.use_ln:
-            self.lnorm3 = LayerNorm(l1)
-            self.lnorm4 = LayerNorm(l2)
-
-        # Out
-        self.w_out_2 = nn.Linear(l3, 1)
-        self.w_out_2.weight.data.mul_(0.1)
-        self.w_out_2.bias.data.mul_(0.1)
-
-        self.to(self.args.device)
-
-    def forward(self, input, action):
-
-        # Hidden Layer 1 (Input Interface)
-        concat_input = torch.cat([input,action],-1)
-
-        out = self.w_l1(concat_input)
-        if self.args.use_ln:out = self.lnorm1(out)
-
-        out = F.leaky_relu(out)
-        # Hidden Layer 2
-        out = self.w_l2(out)
-        if self.args.use_ln: out = self.lnorm2(out)
-        out = F.leaky_relu(out)
-        # Output interface
-        out_1 = self.w_out(out)
-
-        out_2 = self.w_l3(concat_input)
-        if self.args.use_ln: out_2 = self.lnorm3(out_2)
-        out_2 = F.leaky_relu(out_2)
-
-        # Hidden Layer 2
-        out_2 = self.w_l4(out_2)
-        if self.args.use_ln: out_2 = self.lnorm4(out_2)
-        out_2 = F.leaky_relu(out_2)
-
-        # Output interface
-        out_2 = self.w_out_2(out_2)
-
-        return out_1, out_2
-
+    def forward(self, state, action):
+        sa = torch.cat((state, action), dim=-1)
+        quantiles_Q1 = torch.stack(tuple(net(sa) for net in self.Q1_nets), dim=1)
+        quantiles_Q2 = torch.stack(tuple(net(sa) for net in self.Q2_nets), dim=1)
+        return quantiles_Q1, quantiles_Q2
+        
+        
     def Q1(self, input, action):
 
         concat_input = torch.cat([input, action], -1)
@@ -423,8 +413,8 @@ class TD3(object):
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
 
-        self.critic = Critic(args).to(self.device)
-        self.critic_target = Critic(args).to(self.device)
+        self.critic = Critic(args, n_nets=2).to(self.device)
+        self.critic_target = Critic(args, n_nets=2).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr=1e-3)
 
@@ -447,6 +437,20 @@ class TD3(object):
     def select_action(self, state):
         state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
         return self.actor(state).cpu().data.numpy().flatten()
+
+    def approximate_underestimate(self, std_target_Q, replay_buffer):
+        history_target_std = replay_buffer.update(self.args, std_target_Q)
+        history_target_std = torch.FloatTensor(history_target_std).unsqueeze(-1).to(self.device)
+        history_target_std_std, _ = torch.std_mean(history_target_std[:, 1:], 1)
+        over_target_std = torch.where(std_target_Q > 1, std_target_Q**0.9, std_target_Q)
+        if self.args.bellman_mode == "TV":
+            overstimate = torch.where((history_target_std_std > self.args.std_std_threshold), over_target_std, std_target_Q * 0)
+        elif self.args.bellman_mode == "NV":
+            overstimate = 0
+        elif self.args.bellman_mode == "NT":
+            overstimate = over_target_std
+        
+        return overstimate
 
     def train(self,evo_times,all_fitness, all_gen , on_policy_states, on_policy_params, on_policy_discount_rewards,on_policy_actions,replay_buffer, iterations, batch_size=64, discount=0.99, tau=0.005, policy_noise=0.2,
               noise_clip=0.5, policy_freq=2, train_OFN_use_multi_actor= False,all_actor = None):
@@ -512,8 +516,14 @@ class TD3(object):
 
             # Compute the target Q value
             target_Q1, target_Q2 = self.critic_target(next_state, next_action)
+            std_target_Q1, mean_target_Q1 = torch.std_mean(target_Q1, 1)
+            std_target_Q2, mean_target_Q2 = torch.std_mean(target_Q2, 1)
+
+            underestimate_Q1 = self.approximate_underestimate(std_target_Q1, replay_buffer)
+            underestimate_Q2 = self.approximate_underestimate(std_target_Q2, replay_buffer)
+            
             target_Q = torch.min(target_Q1, target_Q2)
-            target_Q = reward + (done * discount * target_Q).detach()
+            target_Q = reward + (done * discount * target_Q + max(underestimate_Q1, underestimate_Q2)).detach()
             
             # Get current Q estimates
             current_Q1, current_Q2 = self.critic(state, action)

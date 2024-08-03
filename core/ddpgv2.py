@@ -6,7 +6,6 @@ from parameters import Parameters
 from core import replay_memory
 from core.mod_utils import is_lnorm_key
 import numpy as np
-from torch.distributions import Normal
 
 def soft_update(target, source, tau):
     for target_param, param in zip(target.parameters(), source.parameters()):
@@ -105,50 +104,34 @@ class shared_state_embedding(nn.Module):
 
         return out
 
+
 class Actor(nn.Module):
-
-    def __init__(self, args, min_log_std=-20, max_log_std=2):
+    def __init__(self, args, init=False):
         super(Actor, self).__init__()
-        self.fc1 = nn.Linear(args.state_dim, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.mu_head = nn.Linear(256, args.action_dim)
-        self.log_std_head = nn.Linear(256, args.action_dim)
-        self.max_action = args.max_action
-
-        self.min_log_std = min_log_std
-        self.max_log_std = max_log_std
         self.args = args
+        l1 = args.ls; l2 = args.ls; l3 = l2
+        # Out
+        self.w_out = nn.Linear(l3, args.action_dim)
+        # Init
+        if init:
+            self.w_out.weight.data.mul_(0.1)
+            self.w_out.bias.data.mul_(0.1)
+
         self.to(self.args.device)
 
-    def forward(self, state):
-        x = torch.relu(self.fc1(state))
-        x = torch.relu(self.fc2(x))
-        mu = self.mu_head(x)
-        log_std_head = self.log_std_head(x)
-        log_std_head = torch.clamp(log_std_head, self.min_log_std, self.max_log_std)
-        return mu, log_std_head
+    def forward(self, input, state_embedding):
+        s_z = state_embedding.forward(input)
+        action = self.w_out(s_z).tanh()
+        return action
 
+    def select_action_from_z(self,s_z):
 
-    def select_action(self, state):
-        state = torch.FloatTensor(state).to(self.args.device)
-        mu, log_sigma = self.forward(state)
-        sigma = torch.exp(log_sigma)
-        dist = Normal(mu, sigma)
-        z = dist.sample()
-        action = torch.tanh(z).detach().cpu().numpy()
-        return action * self.max_action, self.max_action * torch.tanh(mu).detach().cpu().numpy()
+        action = self.w_out(s_z).tanh()
+        return action
 
-    def evaluate(self, state):
-        batch_mu, batch_log_sigma = self.forward(state)
-        batch_sigma = torch.exp(batch_log_sigma)
-        dist = Normal(batch_mu, batch_sigma)
-        noise = Normal(torch.tensor([0.] * self.args.action_dim), 1)    #actor dim=4
-
-        z = noise.sample()
-        action = torch.tanh(batch_mu + batch_sigma*z.to(self.args.device))
-        log_prob = (dist.log_prob(batch_mu + batch_sigma * z.to(self.args.device)) -\
-                   torch.log((1 - action.pow(2)) * self.max_action + 1e-7)).sum(-1).unsqueeze(dim=-1)
-        return action * self.max_action, log_prob, z, batch_mu, batch_log_sigma
+    def select_action(self, state, state_embedding):
+        state = torch.FloatTensor(state.reshape(1, -1)).to(self.args.device)
+        return self.forward(state, state_embedding).cpu().data.numpy().flatten()
 
     def get_novelty(self, batch):
         state_batch, action_batch, _, _, _ = batch
@@ -224,8 +207,8 @@ class Mlp(nn.Module):
             self.norms.append(norm)
             in_size = next_size
         self.last_fc = nn.Linear(in_size, output_size)
-        #self.last_fc.weight.data.mul_(0.1)
-        #self.last_fc.bias.data.mul_(0.1)
+        self.last_fc.weight.data.mul_(0.1)
+        self.last_fc.bias.data.mul_(0.1)
 
     def forward(self, input):
         h = input
@@ -248,6 +231,9 @@ class Critic(nn.Module):
         sa = torch.cat((state, action), dim=-1)
         quantiles = torch.stack(tuple(net(sa) for net in self.nets), dim=1)
         return quantiles
+
+
+
 
 class Policy_Value_Network(nn.Module):
     def __init__(self, args, n_nets=4):
@@ -279,6 +265,8 @@ class Policy_Value_Network(nn.Module):
             out.append(self.nets[i](concat_input))
         return torch.stack(out, dim=1)
 
+import random
+
 def caculate_prob(score):
 
     X = (score - np.min(score))/(np.max(score)-np.min(score) + 1e-8)
@@ -289,115 +277,79 @@ def caculate_prob(score):
     prob = exp_x/sum_exp_x
     return prob
 
-class SAC(object):
+class DDPG(object):
     def __init__(self, args):
+
         self.args = args
-        self.max_action = 1.0
-        self.device = args.device
-        self.actor = Actor(args).to(self.device)
-        self.actor_target = Actor(args).to(self.device)
-        self.actor_target.load_state_dict(self.actor.state_dict())
-
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=6e-4)
-
-        self.critic = Critic(args, n_nets=args.n_nets).to(self.device)
-        self.critic_target = Critic(args, n_nets=args.n_nets).to(self.device)
-        self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr=6e-4)
-
-        self.log_alpha = torch.tensor(0.0).to(args.device)
-        self.log_alpha.requires_grad = True
-        # set target entropy to -|A|
-        self.target_entropy = -args.action_dim
-        self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha],
-                                                    lr=3e-4, betas=(0.9, 0.999))
-
         self.buffer = replay_memory.ReplayMemory(args.individual_bs, args.device)
 
-    @property
-    def alpha(self):
-        return self.log_alpha.exp()
+        self.actor = Actor(args, init=True)
+        self.actor_target = Actor(args, init=True)
+        self.actor_optim = Adam(self.actor.parameters(), lr=0.5e-4)
 
-    def train(self,evo_times,all_fitness, all_gen , on_policy_states, on_policy_params, on_policy_discount_rewards,on_policy_actions,replay_buffer, iterations, batch_size=64, discount=0.99, tau=0.005, policy_noise=0.2,
-              noise_clip=0.5, policy_freq=2, train_OFN_use_multi_actor= False, pop = None):
-        actor_loss_list =[]
-        critic_loss_list =[]
-        pre_loss_list = []
-        pv_loss_list = [0.0]
-        keep_c_loss = [0.0]
+        self.critic = Critic(args)
+        self.critic_target = Critic(args)
+        self.critic_optim = Adam(self.critic.parameters(), lr=0.5e-3)
 
-        for it in range(iterations):
-                
-            x, y, u, r, d, _ ,_= replay_buffer.sample(batch_size)
-            state = torch.FloatTensor(x).to(self.device)
-            action = torch.FloatTensor(u).to(self.device)
-            next_state = torch.FloatTensor(y).to(self.device)
-            done = torch.FloatTensor(1 - d).to(self.device)
-            reward = torch.FloatTensor(r).to(self.device)
+        self.gamma = args.gamma; self.tau = self.args.tau
+        self.loss = nn.MSELoss()
 
-            sample_next_action, next_log_prob, z, batch_mu, batch_log_sigma = self.actor_target.evaluate(next_state)
+        hard_update(self.actor_target, self.actor)  # Make sure target is with the same weight
+        hard_update(self.critic_target, self.critic)
 
-            # Compute the target Q value
-            target_Q = self.critic_target(next_state, sample_next_action)
-            std_target_Q, mean_target_Q = torch.std_mean(target_Q, 1)
-            history_target_std = replay_buffer.update(self.args, std_target_Q)
-            history_target_std = torch.FloatTensor(history_target_std).unsqueeze(-1).to(self.device)
-            history_target_std_std, _ = torch.std_mean(history_target_std[:, 1:], 1)
-            over_target_std = torch.where(std_target_Q > 1, std_target_Q**0.9, std_target_Q)
-            if self.args.bellman_mode == "TV":
-                overstimate = torch.where((history_target_std_std > self.args.std_std_threshold), over_target_std, std_target_Q * 0)
-            elif self.args.bellman_mode == "NV":
-                overstimate = 0
-            elif self.args.bellman_mode == "NT":
-                overstimate = over_target_std
-            #overstimate = torch.where(history_target_std_std > self.args.std_std_threshold, std_target_Q ** 0.9, std_target_Q * 0)
-            target_Q = reward + (done * discount * (mean_target_Q - self.alpha * next_log_prob - overstimate)).detach()
-            
-            # Get current Q estimates
-            current_Q= self.critic(state, action)
+    def td_error(self, state, action, next_state, reward, done):
+        next_action = self.actor_target.forward(next_state)
+        next_q = self.critic_target(next_state, next_action)
 
-            # Compute critic loss
-            critic_loss = F.mse_loss(current_Q.squeeze(-1), target_Q.expand(-1, self.args.n_nets))
+        done = 1 if done else 0
+        if self.args.use_done_mask: next_q = next_q * (1 - done)  # Done mask
+        target_q = reward + (self.gamma * next_q)
 
-            # Optimize the critic
-            self.critic_optimizer.zero_grad()
-            critic_loss.backward()
-            nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
-            self.critic_optimizer.step()
-            critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
+        current_q = self.critic(state, action)
+        dt = (current_q - target_q).abs()
+        return dt.item()
 
-            # Delayed policy updates
-            if it % policy_freq == 0:
-                actor, log_prob, _, _, _ = self.actor.evaluate(state)
-                # Compute actor loss
-                actor_loss = -self.critic(state, actor).mean() + self.alpha.detach() *log_prob.mean()
-                # Optimize the actor
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward(retain_graph=True)
-                nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
-                self.actor_optimizer.step()
+    def update_parameters(self, batch):
+        state_batch, action_batch, next_state_batch, reward_batch, done_batch = batch
 
-                self.log_alpha_optimizer.zero_grad()
-                alpha_loss = (self.alpha *
-                              (-log_prob - self.target_entropy).detach()).mean()
-                alpha_loss.backward()
-                self.log_alpha_optimizer.step()
+        # Load everything to GPU if not already
+        self.actor_target.to(self.args.device)
+        self.critic_target.to(self.args.device)
+        self.critic.to(self.args.device)
+        state_batch = state_batch.to(self.args.device)
+        next_state_batch = next_state_batch.to(self.args.device)
+        action_batch = action_batch.to(self.args.device)
+        reward_batch = reward_batch.to(self.args.device)
+        if self.args.use_done_mask: done_batch = done_batch.to(self.args.device)
 
-                for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+        # Critic Update
+        next_action_batch = self.actor_target.forward(next_state_batch)
+        next_q = self.critic_target.forward(next_state_batch, next_action_batch)
+        if self.args.use_done_mask: next_q = next_q * (1 - done_batch) #Done mask
+        target_q = reward_batch + (self.gamma * next_q).detach()
 
-                for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+        self.critic_optim.zero_grad()
+        current_q = self.critic.forward(state_batch, action_batch)
+        delta = (current_q - target_q).abs()
+        dt = torch.mean(delta**2)
+        dt.backward()
+        nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
+        self.critic_optim.step()
 
-                # for param, target_param in zip(self.PVN.parameters(), self.PVN_Target.parameters()):
-                #     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+        # Actor Update
+        self.actor_optim.zero_grad()
 
-                actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
-                pre_loss_list.append(0.0)
+        policy_grad_loss = -(self.critic.forward(state_batch, self.actor.forward(state_batch))).mean()
+        policy_loss = policy_grad_loss
 
-        return np.mean(actor_loss_list) , np.mean(critic_loss_list), np.mean(pre_loss_list),np.mean(pv_loss_list), np.mean(keep_c_loss)
+        policy_loss.backward()
+        nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
+        self.actor_optim.step()
 
+        soft_update(self.actor_target, self.actor, self.tau)
+        soft_update(self.critic_target, self.critic, self.tau)
 
+        return policy_grad_loss.data.cpu().numpy(), delta.data.cpu().numpy()
 
 def fanin_init(size, fanin=None):
     v = 0.008

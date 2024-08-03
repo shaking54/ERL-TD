@@ -22,6 +22,7 @@ torch.set_num_threads(cpu_num)
 
 
 parser = argparse.ArgumentParser()
+parser.add_argument('-agent', default="td3", help='Agent Choices: (td3) (sac)', type=str)
 parser.add_argument('-env', default="Swimmer-v2", help='Environment Choices: (Swimmer-v2) (HalfCheetah-v2) (Hopper-v2) ' +
                                  '(Walker2d-v2) (Ant-v2)', type=str)
 parser.add_argument('-seed', help='Random seed to be used', type=int, default=7)
@@ -148,7 +149,10 @@ if __name__ == "__main__":
         exit()
 
     # Create Agent
-    agent = agent.Agent(parameters, env)
+    if parameters.agent == 'td3':
+        agent = td3_agent.Agent(parameters, env)
+    else:
+        agent = agent.Agent(parameters, env)
     print('Running', parameters.env_name, ' State_dim:', parameters.state_dim, ' Action_dim:', parameters.action_dim)
 
     next_save = parameters.next_save; time_start = time.time()

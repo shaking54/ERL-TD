@@ -10,6 +10,8 @@ class Parameters:
             return
         cla = cla.parse_args()
 
+        self.agent = None
+
         # Set the device to run on CUDA or CPU
         self.device = '{}'.format(cla.device) if torch.cuda.is_available() else 'cpu'
 
