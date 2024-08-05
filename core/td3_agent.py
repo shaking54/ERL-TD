@@ -96,9 +96,9 @@ class Agent:
                 action = self.env.action_space.sample()
             else:
                 if store_transition:
-                    action = agent.actor.select_action(np.array(state))
+                    action = agent.actor.select_action(np.array(state), self.rl_agent.state_embedding)
                 else:
-                    action = agent.actor.select_action(np.array(state), agent.state_embedding)
+                    action = agent.actor.select_action(np.array(state), self.rl_agent.state_embedding)
             all_state.append(np.array(state))
             all_action.append(np.array(action))
             # Simulate one step in environment
@@ -120,24 +120,24 @@ class Agent:
 
             transition = (state, action, next_state, reward, done_bool)
             if store_transition:
-                next_action = agent.actor.select_action(np.array(next_state), agent.state_embedding)
+                next_action = agent.actor.select_action(np.array(next_state), self.rl_agent.state_embedding)
                 self.replay_buffer.add((state, next_state, action, reward, done_bool, next_action ,policy_params, np.zeros(self.args.histroy_std_num + 1)))
                 #self.replay_buffer.add(*transition)
                 agent.buffer.add(*transition)
                 next_action_list.append(next_action)
             if isinstance(agent, td3.TD3) and store_transition  and self.rl_agent_frames>=self.args.init_steps:
-                self.rl_agent.train(None, None, self.pop, None, None,
+                self.rl_agent.train(self.evo_times, None, self.pop, None, None,
                                     None, None, self.replay_buffer,
                                     1, 256,
                                     discount=self.args.gamma, tau=self.args.tau, policy_noise=self.args.TD3_noise,
-                                    train_OFN_use_multi_actor=self.args.random_choose)
+                                    train_OFN_use_multi_actor=self.args.random_choose, all_actor=self.all_actors)
             episode_timesteps += 1
             state = next_state
         Q_espisde_mean = 0
         if use_n_step_return:
             state_tensor = torch.FloatTensor(np.array(state_list)).to(self.args.device)
             action_tensor = torch.FloatTensor(np.array(action_list)).to(self.args.device)
-            next_Q = PeVFA.forward(state_tensor, action_tensor)
+            next_Q, _ = PeVFA.forward(state_tensor, action_tensor)
             std_next_Q, mean_next_Q = torch.std_mean(next_Q, 1)
             Q_espisde_mean = (mean_next_Q).mean().cpu().data.numpy().flatten()
         if store_transition: self.num_games += 1
@@ -167,14 +167,14 @@ class Agent:
                 novelties[i] += (net.get_novelty(batch))
         return novelties / epochs
 
-    def train_sac(self, evo_times,all_fitness, state_list_list,reward_list_list, policy_params_list_list,action_list_list):
+    def train_td3(self, evo_times,all_fitness, state_list_list,reward_list_list, policy_params_list_list,action_list_list):
         bcs_loss, pgs_loss,c_q,t_q = [], [],[],[]
         if len(self.replay_buffer.storage) >= 5000:#self.args.batch_size * 5:
             before_rewards = np.zeros(len(self.pop))
 
             # sac.hard_update(self.rl_agent.old_state_embedding, self.rl_agent.state_embedding)
             for gen in self.pop:
-                sac.hard_update(gen.old_actor, gen.actor)
+                td3.hard_update(gen.old_actor, gen.actor)
 
             discount_reward_list_list =[]
             for reward_list in reward_list_list:
@@ -188,7 +188,7 @@ class Agent:
             #print("policy_params_list_list ", policy_params_list_list.shape)
             action_list_list = np.concatenate(np.array(action_list_list))
             batch_size = int(256 * len(self.replay_buffer.storage) / self.replay_buffer.max_size) + 32
-            pgl, delta,pre_loss,pv_loss,keep_c_loss= self.rl_agent.train(evo_times,all_fitness, self.pop , state_list_list, policy_params_list_list, discount_reward_list_list,action_list_list, self.replay_buffer ,int(self.gen_frames * self.args.frac_frames_train), batch_size, discount=self.args.gamma, tau=self.args.tau,policy_noise=self.args.TD3_noise,train_OFN_use_multi_actor=self.args.random_choose,pop=self.pop)
+            pgl, delta,pre_loss,pv_loss,keep_c_loss= self.rl_agent.train(evo_times,all_fitness, self.pop , state_list_list, policy_params_list_list, discount_reward_list_list,action_list_list, self.replay_buffer ,int(self.gen_frames * self.args.frac_frames_train), batch_size, discount=self.args.gamma, tau=self.args.tau,policy_noise=self.args.TD3_noise,train_OFN_use_multi_actor=self.args.random_choose)
             after_rewards = np.zeros(len(self.pop))
         else:
             before_rewards = np.zeros(len(self.pop))
@@ -285,7 +285,7 @@ class Agent:
             action_list_list.append(episode['action_list'])
 
             if self.rl_agent_frames>=self.args.init_steps:
-                losses, _, add_rewards = self.train_sac(self.evo_times,all_fitness, state_list_list,reward_list_list,policy_parms_list_list,action_list_list)
+                losses, _, add_rewards = self.train_td3(self.evo_times,all_fitness, state_list_list,reward_list_list,policy_parms_list_list,action_list_list)
             else :
                 losses = {'bcs_loss': 0.0, 'pgs_loss': 0.0 ,"current_q":0.0, "target_q":0.0, "pv_loss":0.0, "pre_loss":0.0}
                 add_rewards = np.zeros(len(self.pop)) 

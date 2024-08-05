@@ -425,22 +425,22 @@ class SSNE:
                         if prob < 0.2:
                             # for _ in range(5):
                             #     self.distill(pop[i], pop[elitist_index[0]], buffer)
-                            self.distill(pop[i], pop[elitist_index[0]], buffer, ucb=False)
-                            self.distill(pop[i], pop[elitist_index[0]], buffer, ucb=False, grad_step=False, num=1)
+                            self.distill(pop[i], pop[elitist_index[0]], buffer, ucb=False, state_embedding=agent.state_embedding)
+                            self.distill(pop[i], pop[elitist_index[0]], buffer, ucb=False, grad_step=False, num=1, state_embedding=agent.state_embedding)
                             self.mutate_inplace(pop[i], grad=True)
                             #self.distill(pop[i], pop[elitist_index[0]], buffer)
                         elif 0.15 < prob < 0.15:
                             # for _ in range(5):
                                 # self.distill(pop[i], agent, buffer, ucb=True)
-                            self.distill(pop[i], agent, buffer, ucb=True)
-                            self.distill(pop[i], agent, buffer, ucb=True, grad_step=False, num=1)
+                            self.distill(pop[i], agent, buffer, ucb=True, state_embedding=agent.state_embedding)
+                            self.distill(pop[i], agent, buffer, ucb=True, grad_step=False, num=1, state_embedding=agent.state_embedding)
                             self.mutate_inplace(pop[i], grad=True)
                             #self.distill(pop[i], agent, buffer, ucb=True)
                         else:
                             # for _ in range(5):
                             #self.distill(pop[i], agent, buffer)
-                            self.distill(pop[i], agent, buffer, ucb=False)
-                            self.distill(pop[i], agent, buffer, ucb=False, grad_step=False, num=1)
+                            self.distill(pop[i], agent, buffer, ucb=False, state_embedding=agent.state_embedding)
+                            self.distill(pop[i], agent, buffer, ucb=False, grad_step=False, num=1, state_embedding=agent.state_embedding)
                             self.mutate_inplace(pop[i], grad=True)
                             #self.distill(pop[i], agent, buffer)
                     else:
@@ -528,14 +528,14 @@ class SSNE:
         self.stats.reset()
         return new_elitists[0]
 
-    def distill(self, pop, agent, buffer, ucb=False, grad_step=True, num=10):
+    def distill(self, pop, agent, buffer, ucb=False, grad_step=True, num=10, state_embedding=None):
         #for _ in range(int(len(buffer.storage)/self.args.batch_size)):
         for _ in range(num):
             if ucb:
                 x, _, _, _, _, _, _ = buffer.sample(self.args.batch_size)
                 state = torch.FloatTensor(x).to(self.args.device)
-                actor, log_prob, _, _, _ = pop.actor.evaluate(state)
-                Q = -agent.critic(state, actor)
+                actor, log_prob = pop.actor.evaluate(state, state_embedding)
+                Q, _ = -agent.critic(state, actor)
                 std_Q, mean_Q = torch.std_mean(Q, 1)
                 pop_actor_loss = (-(0.5 * std_Q + mean_Q) + agent.alpha.detach() * log_prob).mean()
                 pop.actor_optim.zero_grad()
@@ -543,8 +543,8 @@ class SSNE:
             else:
                 x, _, _, _, _, _, _ = buffer.sample(self.args.batch_size)
                 state = torch.FloatTensor(x).to(self.args.device)
-                actor_target, _, _, _, _ = agent.actor.evaluate(state)
-                actor, _, _, _, _ = pop.actor.evaluate(state)
+                actor_target, _,= agent.actor.evaluate(state, state_embedding)
+                actor, _ = pop.actor.evaluate(state, state_embedding)
                 pop_actor_loss = ((actor - actor_target.detach()) **2 * 0.5).mean()
                 pop.actor_optim.zero_grad()
                 pop_actor_loss.backward()

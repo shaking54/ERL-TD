@@ -21,7 +21,7 @@ class Parameters:
         self.save_periodic = cla.save_periodic
 
         # Number of Frames to Run
-        self.num_frames = 10000
+        self.num_frames = 1000000
         self.n_nets = cla.n_nets
         self.bellman_mode = cla.bellman_mode # TV NT NV
         self.mutate_mode = cla.mutate_mode #  distill_mutate gauss_mutate

@@ -90,7 +90,7 @@ class Agent:
                                                                                   self.args.env_name))
                 if rl_agent_collect_data:
                     self.rl_agent_frames +=1
-            #if self.args.render and is_render: self.env.render()
+            #if self.args.render and is_render: self.env.render()self
             
             if is_random:
                 action = self.env.action_space.sample()

@@ -6,6 +6,9 @@ from parameters import Parameters
 from core import replay_memory
 from core.mod_utils import is_lnorm_key
 import numpy as np
+from torch.distributions import Normal
+
+torch.autograd.set_detect_anomaly(True)
 
 def soft_update(target, source, tau):
     for target_param, param in zip(target.parameters(), source.parameters()):
@@ -109,6 +112,7 @@ class Actor(nn.Module):
     def __init__(self, args, init=False):
         super(Actor, self).__init__()
         self.args = args
+        self.max_action = 1 if args.max_action is None else args.max_action
         l1 = args.ls; l2 = args.ls; l3 = l2
         # Out
         self.w_out = nn.Linear(l3, args.action_dim)
@@ -123,6 +127,11 @@ class Actor(nn.Module):
         s_z = state_embedding.forward(input)
         action = self.w_out(s_z).tanh()
         return action
+
+    def evaluate(self, state, state_embedding):
+        action = self.forward(state, state_embedding)
+        log_prob = Normal(0, 1).log_prob(action).sum(dim=-1)
+        return action * self.max_action, log_prob
 
     def select_action_from_z(self,s_z):
 
@@ -246,19 +255,23 @@ class Critic(nn.Module):
         
     def Q1(self, input, action):
 
-        concat_input = torch.cat([input, action], -1)
+        out_all = torch.tensor([]).to(self.args.device)
+        for net in self.Q1_nets:
+            concat_input = torch.cat([input, action], -1)
 
-        out = self.w_l1(concat_input)
-        if self.args.use_ln:out = self.lnorm1(out)
+            out = net.w_l1(concat_input)
+            if self.args.use_ln:out = net.lnorm1(out)
 
-        out = F.leaky_relu(out)
-        # Hidden Layer 2
-        out = self.w_l2(out)
-        if self.args.use_ln: out = self.lnorm2(out)
-        out = F.leaky_relu(out)
-        # Output interface
-        out_1 = self.w_out(out)
-        return out_1
+            out = F.leaky_relu(out)
+            # Hidden Layer 2
+            out = net.w_l2(out)
+            if self.args.use_ln: out = net.lnorm2(out)
+            out = F.leaky_relu(out)
+            # Output interface
+            out_1 = net.w_out(out)
+            out_all = torch.cat([out_all, out_1.unsqueeze(1)], 1).to(self.args.device)
+        _, mean_Q1 = torch.std_mean(out_all, 1)
+        return mean_Q1
 
 
 
@@ -442,9 +455,9 @@ class TD3(object):
         history_target_std = replay_buffer.update(self.args, std_target_Q)
         history_target_std = torch.FloatTensor(history_target_std).unsqueeze(-1).to(self.device)
         history_target_std_std, _ = torch.std_mean(history_target_std[:, 1:], 1)
-        over_target_std = torch.where(std_target_Q > 1, std_target_Q**0.9, std_target_Q)
+        over_target_std = torch.where(std_target_Q < 1, std_target_Q**0.9, std_target_Q)
         if self.args.bellman_mode == "TV":
-            overstimate = torch.where((history_target_std_std > self.args.std_std_threshold), over_target_std, std_target_Q * 0)
+            overstimate = torch.where((history_target_std_std < self.args.std_std_threshold), over_target_std, std_target_Q * 0)
         elif self.args.bellman_mode == "NV":
             overstimate = 0
         elif self.args.bellman_mode == "NT":
@@ -522,14 +535,19 @@ class TD3(object):
             underestimate_Q1 = self.approximate_underestimate(std_target_Q1, replay_buffer)
             underestimate_Q2 = self.approximate_underestimate(std_target_Q2, replay_buffer)
             
+            std_target_Q, mean_target_Q = torch.std_mean(torch.stack([mean_target_Q1, mean_target_Q2], dim=1), 1)
+
             target_Q = torch.min(target_Q1, target_Q2)
-            target_Q = reward + (done * discount * target_Q + max(underestimate_Q1, underestimate_Q2)).detach()
+            target_Q = reward + (done * discount * (mean_target_Q + torch.max(underestimate_Q1, underestimate_Q2))).detach()
             
             # Get current Q estimates
             current_Q1, current_Q2 = self.critic(state, action)
 
+            _, mean_target_Q1 = torch.std_mean(current_Q1, 1)
+            _, mean_target_Q2 = torch.std_mean(current_Q2, 1)
+
             # Compute critic loss
-            critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+            critic_loss = F.mse_loss(mean_target_Q1, target_Q) + F.mse_loss(mean_target_Q2, target_Q)
  
             # Optimize the critic
             self.critic_optimizer.zero_grad()
@@ -566,14 +584,14 @@ class TD3(object):
                                 input = self.state_embedding.forward(state)
     
                             new_actor_loss += -self.PVN.Q1(input,param).mean()
-
+                    evo_times += 1
 
                     total_loss = self.args.actor_alpha * actor_loss  + self.args.EA_actor_alpha* new_actor_loss
                 else :
                     total_loss = self.args.actor_alpha * actor_loss
 
                 self.state_embedding_optimizer.zero_grad()
-                total_loss.backward()
+                # total_loss.backward()
                 nn.utils.clip_grad_norm_(self.state_embedding.parameters(), 10)
                 self.state_embedding_optimizer.step()
                 # Update the frozen target models
@@ -593,7 +611,7 @@ class TD3(object):
                 actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
                 pre_loss_list.append(0.0)
 
-        return np.mean(actor_loss_list) , np.mean(critic_loss_list), np.mean(pre_loss_list),np.mean(pv_loss_list), np.mean(keep_c_loss)
+        return np.mean(actor_loss_list) , np.mean(critic_loss_list), np.mean(pre_loss_list),pv_loss_list, keep_c_loss
 
 
 
