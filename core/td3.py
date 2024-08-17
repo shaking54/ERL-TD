@@ -116,7 +116,9 @@ class Actor(nn.Module):
         self.max_action = 1 if args.max_action is None else args.max_action
         l1 = args.ls; l2 = args.ls; l3 = l2
         # Out
-        self.w_out = nn.Linear(l3, args.action_dim)
+        self.fc1 = nn.Linear(args.state_dim, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.w_out = nn.Linear(256, args.action_dim)
         # Init
         if init:
             self.w_out.weight.data.mul_(0.1)
@@ -124,24 +126,24 @@ class Actor(nn.Module):
 
         self.to(self.args.device)
 
-    def forward(self, input, state_embedding):
-        s_z = state_embedding.forward(input)
-        action = self.w_out(s_z).tanh()
+    def forward(self, input):
+        out = F.relu(self.fc1(input))
+        out = F.relu(self.fc2(out))
+        action = self.w_out(out).tanh()
         return action
 
-    def evaluate(self, state, state_embedding):
-        action = self.forward(state, state_embedding)
+    def evaluate(self, state):
+        action = self.forward(state)
         log_prob = Normal(0, 1).log_prob(action).sum(dim=-1)
         return action * self.max_action, log_prob
 
     def select_action_from_z(self,s_z):
-
         action = self.w_out(s_z).tanh()
         return action
 
-    def select_action(self, state, state_embedding):
+    def select_action(self, state):
         state = torch.FloatTensor(state.reshape(1, -1)).to(self.args.device)
-        return self.forward(state, state_embedding).cpu().data.numpy().flatten()
+        return self.forward(state).cpu().data.numpy().flatten()
 
     def get_novelty(self, batch):
         state_batch, action_batch, _, _, _ = batch
@@ -432,8 +434,8 @@ class TD3(object):
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
 
-        self.critic = Critic(args, n_nets=2).to(self.device)
-        self.critic_target = Critic(args, n_nets=2).to(self.device)
+        self.critic = Critic(args, n_nets=1).to(self.device)
+        self.critic_target = Critic(args, n_nets=1).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
         self.critic_optimizers = [
@@ -448,13 +450,13 @@ class TD3(object):
         self.PVN_Target.load_state_dict(self.PVN.state_dict())
         self.PVN_optimizer = torch.optim.Adam([{'params': self.PVN.parameters()}],lr=1e-3)
 
-        self.state_embedding = shared_state_embedding(args)
-        self.state_embedding_target = shared_state_embedding(args)
-        self.state_embedding_target.load_state_dict(self.state_embedding.state_dict())
+        # self.state_embedding = shared_state_embedding(args)
+        # self.state_embedding_target = shared_state_embedding(args)
+        # self.state_embedding_target.load_state_dict(self.state_embedding.state_dict())
       
       
-        self.old_state_embedding = shared_state_embedding(args)
-        self.state_embedding_optimizer = torch.optim.Adam(self.state_embedding.parameters(), lr=1e-3)
+        # self.old_state_embedding = shared_state_embedding(args)
+        # self.state_embedding_optimizer = torch.optim.Adam(self.state_embedding.parameters(), lr=1e-3)
 
     def select_action(self, state):
         state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
@@ -507,7 +509,7 @@ class TD3(object):
     
                     with torch.no_grad():
                         if self.args.OFF_TYPE == 1:
-                            input = torch.cat([next_state,actor.forward(next_state,self.state_embedding)],-1)
+                            input = torch.cat([next_state,actor.forward(next_state)],-1)
                         else :
                             input = self.state_embedding.forward(next_state)
                         next_Q1, next_Q2 = self.PVN_Target.forward(input ,param)
@@ -534,7 +536,7 @@ class TD3(object):
             noise = torch.FloatTensor(u).data.normal_(0, policy_noise).to(self.device)
             noise = noise.clamp(-noise_clip, noise_clip)
 
-            next_action = (self.actor_target.forward(next_state,self.state_embedding_target)+noise).clamp(-self.max_action, self.max_action)
+            next_action = (self.actor_target.forward(next_state)+noise).clamp(-self.max_action, self.max_action)
 
             # Compute the target Q value
             target_Q1, target_Q2 = self.critic_target(next_state, next_action)
@@ -568,7 +570,7 @@ class TD3(object):
             if it % policy_freq == 0:
 
                 # Compute actor loss
-                s_z= self.state_embedding.forward(state)
+                s_z = state
                 actor_loss = -1*torch.mean(self.critic.Q1(state, self.actor.select_action_from_z(s_z)))
                 # Optimize the actor
                 self.actor_optimizer.zero_grad()
@@ -576,32 +578,32 @@ class TD3(object):
                 nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
                 self.actor_optimizer.step()
 
-                if self.args.EA:
-                    index = random.sample(list(range(self.args.pop_size+1)), self.args.K)
-                    new_actor_loss = 0.0
+                # if self.args.EA:
+                #     index = random.sample(list(range(self.args.pop_size+1)), self.args.K)
+                #     new_actor_loss = 0.0
     
-                    if evo_times > 0 :
-                        for ind in index :
-                            actor = all_actor[ind]
-                            param = nn.utils.parameters_to_vector(list(actor.parameters())).data.cpu().numpy()
-                            param = torch.FloatTensor(param).to(self.device)
-                            param = param.repeat(len(state), 1)
-                            if self.args.OFF_TYPE == 1:
-                                input = torch.cat([state,actor.forward(state,self.state_embedding)], -1)
-                            else:
-                                input = self.state_embedding.forward(state)
+                #     if evo_times > 0 :
+                #         for ind in index :
+                #             actor = all_actor[ind]
+                #             param = nn.utils.parameters_to_vector(list(actor.parameters())).data.cpu().numpy()
+                #             param = torch.FloatTensor(param).to(self.device)
+                #             param = param.repeat(len(state), 1)
+                #             if self.args.OFF_TYPE == 1:
+                #                 input = torch.cat([state,actor.forward(state)], -1)
+                #             else:
+                #                 input = self.state_embedding.forward(state)
     
-                            new_actor_loss += -self.PVN.Q1(input,param).mean()
-                    evo_times += 1
+                #             new_actor_loss += -self.PVN.Q1(input,param).mean()
+                #     evo_times += 1
 
-                    total_loss = (self.args.actor_alpha * actor_loss.detach().requires_grad_(True) + self.args.EA_actor_alpha* new_actor_loss)
-                else :
-                    total_loss = (self.args.actor_alpha * actor_loss.detach().requires_grad_(True))
+                #     total_loss = (self.args.actor_alpha * actor_loss.detach().requires_grad_(True) + self.args.EA_actor_alpha* new_actor_loss)
+                # else :
+                #     total_loss = (self.args.actor_alpha * actor_loss.detach().requires_grad_(True))
 
-                self.state_embedding_optimizer.zero_grad()
-                total_loss.backward()
-                nn.utils.clip_grad_norm_(self.state_embedding.parameters(), 10)
-                self.state_embedding_optimizer.step()
+                # self.state_embedding_optimizer.zero_grad()
+                # total_loss.backward()
+                # nn.utils.clip_grad_norm_(self.state_embedding.parameters(), 10)
+                # self.state_embedding_optimizer.step()
                 # Update the frozen target models
                 
                 for param, target_param in zip(self.state_embedding.parameters(), self.state_embedding_target.parameters()):

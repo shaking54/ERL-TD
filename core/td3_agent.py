@@ -97,9 +97,9 @@ class Agent:
                 action = self.env.action_space.sample()
             else:
                 if store_transition:
-                    action = agent.actor.select_action(np.array(state), self.rl_agent.state_embedding)
+                    action = agent.actor.select_action(np.array(state))
                 else:
-                    action = agent.actor.select_action(np.array(state), self.rl_agent.state_embedding)
+                    action = agent.actor.select_action(np.array(state))
             all_state.append(np.array(state))
             all_action.append(np.array(action))
             # Simulate one step in environment
@@ -121,7 +121,7 @@ class Agent:
 
             transition = (state, action, next_state, reward, done_bool)
             if store_transition:
-                next_action = agent.actor.select_action(np.array(next_state), self.rl_agent.state_embedding)
+                next_action = agent.actor.select_action(np.array(next_state))
                 self.replay_buffer.add((state, next_state, action, reward, done_bool, next_action ,policy_params, np.zeros(self.args.histroy_std_num + 1)))
                 #self.replay_buffer.add(*transition)
                 agent.buffer.add(*transition)
