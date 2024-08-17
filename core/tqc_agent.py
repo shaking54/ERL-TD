@@ -136,7 +136,7 @@ class Agent:
             state_tensor = torch.FloatTensor(np.array(state_list)).to(self.args.device)
             action_tensor = torch.FloatTensor(np.array(action_list)).to(self.args.device)
             next_Q = PeVFA.forward(state_tensor, action_tensor)
-            mean_next_Q = torch.mean(next_Q, 1)
+            _, mean_next_Q = torch.std_mean(next_Q, 1)
             Q_espisde_mean = (mean_next_Q).mean().cpu().data.numpy().flatten()
         if store_transition: self.num_games += 1
 
