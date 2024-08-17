@@ -12,6 +12,7 @@ import scipy.signal
 import torch.nn as nn
 import math
 import random
+import wandb
 
 def discount(x, gamma):
     """ Calculate discounted forward sum of a sequence at each point """
@@ -88,6 +89,7 @@ class Agent:
                         "evaluate_num \t{}, the ep_r is \t{}, env is \t{}".format(int(self.num_frames / 2000),
                                                                                   eval_res['reward'],
                                                                                   self.args.env_name))
+                    wandb.log({"ep_r": eval_res['reward']})
                 if rl_agent_collect_data:
                     self.rl_agent_frames +=1
             #if self.args.render and is_render: self.env.render()self
@@ -165,7 +167,7 @@ class Agent:
                 novelties[i] += (net.get_novelty(batch))
         return novelties / epochs
 
-    def train_sac(self, evo_times,all_fitness, state_list_list,reward_list_list, policy_params_list_list,action_list_list):
+    def train_tqc(self, evo_times,all_fitness, state_list_list,reward_list_list, policy_params_list_list,action_list_list):
         bcs_loss, pgs_loss,c_q,t_q = [], [],[],[]
         if len(self.replay_buffer.storage) >= 5000:#self.args.batch_size * 5:
             before_rewards = np.zeros(len(self.pop))
@@ -283,7 +285,7 @@ class Agent:
             action_list_list.append(episode['action_list'])
 
             if self.rl_agent_frames>=self.args.init_steps:
-                losses, _, add_rewards = self.train_sac(self.evo_times,all_fitness, state_list_list,reward_list_list,policy_parms_list_list,action_list_list)
+                losses, _, add_rewards = self.train_tqc(self.evo_times,all_fitness, state_list_list,reward_list_list,policy_parms_list_list,action_list_list)
             else :
                 losses = {'bcs_loss': 0.0, 'pgs_loss': 0.0 ,"current_q":0.0, "target_q":0.0, "pv_loss":0.0, "pre_loss":0.0}
                 add_rewards = np.zeros(len(self.pop)) 

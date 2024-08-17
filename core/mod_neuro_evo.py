@@ -421,7 +421,7 @@ class SSNE:
                     self.proximal_mutate(pop[i], mag=self.args.mutation_mag)
                 else:
                     if len(buffer.storage) > self.args.init_steps:
-                        prob = random.random()
+                        prob = 0.15
                         if prob < 0.2:
                             # for _ in range(5):
                             #     self.distill(pop[i], pop[elitist_index[0]], buffer)
@@ -429,7 +429,7 @@ class SSNE:
                             self.distill(pop[i], pop[elitist_index[0]], buffer, ucb=False, grad_step=False, num=1)
                             self.mutate_inplace(pop[i], grad=True)
                             #self.distill(pop[i], pop[elitist_index[0]], buffer)
-                        elif 0.15 < prob < 0.15:
+                        elif 0.15 <= prob <= 0.15:
                             # for _ in range(5):
                                 # self.distill(pop[i], agent, buffer, ucb=True)
                             self.distill(pop[i], agent, buffer, ucb=True)

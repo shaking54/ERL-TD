@@ -309,20 +309,20 @@ class TQC(object):
             done = torch.FloatTensor(1 - d).to(self.device)
             reward = torch.FloatTensor(r).to(self.device)
 
-            with torch.no_grad():
-                sample_next_action, next_log_prob, z, batch_mu, batch_log_sigma = self.actor.evaluate(next_state)
+            # with torch.no_grad():
+            sample_next_action, next_log_prob, z, batch_mu, batch_log_sigma = self.actor.evaluate(next_state)
 
-                # compute and cut quantiles at the next action
-                next_quantiles = self.critic_target(next_state, sample_next_action)
-                sorted_next_quantiles, _ = torch.sort(next_quantiles.reshape(batch_size, -1))
-                sorted_next_quantiles_part = sorted_next_quantiles[:, :self.quantiles_total - self.top_quantiles_to_drop]
+            # compute and cut quantiles at the next action
+            next_quantiles = self.critic_target(next_state, sample_next_action)
+            sorted_next_quantiles, _ = torch.sort(next_quantiles.reshape(batch_size, -1))
+            sorted_next_quantiles_part = sorted_next_quantiles[:, :self.quantiles_total - self.top_quantiles_to_drop]
 
-                # compute target
-                target_Q = reward + (done * discount * (sorted_next_quantiles_part - self.alpha * next_log_prob)).detach()
+            # compute target
+            target_Q = reward + (done * discount * (sorted_next_quantiles_part - self.alpha * next_log_prob))
 
             cur_Q = self.critic(state, action)
             critic_loss = quantile_huber_loss_f(cur_Q, target_Q, self.device)
-
+            
             # --- Update ---
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
