@@ -445,10 +445,10 @@ class TD3(object):
         self.buffer = replay_memory.ReplayMemory(args.individual_bs, args.device)
 
 
-        self.PVN = Policy_Value_Network(args).to(self.device)
-        self.PVN_Target = Policy_Value_Network(args).to(self.device)
-        self.PVN_Target.load_state_dict(self.PVN.state_dict())
-        self.PVN_optimizer = torch.optim.Adam([{'params': self.PVN.parameters()}],lr=1e-3)
+        # self.PVN = Policy_Value_Network(args).to(self.device)
+        # self.PVN_Target = Policy_Value_Network(args).to(self.device)
+        # self.PVN_Target.load_state_dict(self.PVN.state_dict())
+        # self.PVN_optimizer = torch.optim.Adam([{'params': self.PVN.parameters()}],lr=1e-3)
 
         # self.state_embedding = shared_state_embedding(args)
         # self.state_embedding_target = shared_state_embedding(args)
@@ -493,44 +493,44 @@ class TD3(object):
             done = torch.FloatTensor(1 - d).to(self.device)
             reward = torch.FloatTensor(r).to(self.device)
             
-            if self.args.EA:
-                if self.args.use_all:
-                    use_actors = all_actor
-                else :
-                    index = random.sample(list(range(self.args.pop_size+1)), 1)[0]
-                    use_actors = [all_actor[index]]
+            # if self.args.EA:
+            #     if self.args.use_all:
+            #         use_actors = all_actor
+            #     else :
+            #         index = random.sample(list(range(self.args.pop_size+1)), 1)[0]
+            #         use_actors = [all_actor[index]]
 
                 # off policy update
-                pv_loss = 0.0
-                for actor in use_actors:
-                    param = nn.utils.parameters_to_vector(list(actor.parameters())).data.cpu().numpy()
-                    param = torch.FloatTensor(param).to(self.device)
-                    param = param.repeat(len(state), 1)
+            #     pv_loss = 0.0
+            #     for actor in use_actors:
+            #         param = nn.utils.parameters_to_vector(list(actor.parameters())).data.cpu().numpy()
+            #         param = torch.FloatTensor(param).to(self.device)
+            #         param = param.repeat(len(state), 1)
     
-                    with torch.no_grad():
-                        if self.args.OFF_TYPE == 1:
-                            input = torch.cat([next_state,actor.forward(next_state)],-1)
-                        else :
-                            input = self.state_embedding.forward(next_state)
-                        next_Q1, next_Q2 = self.PVN_Target.forward(input ,param)
-                        next_target_Q = torch.min(next_Q1,next_Q2)
-                        target_Q = reward + (done * discount * next_target_Q).detach()
+            #         with torch.no_grad():
+            #             if self.args.OFF_TYPE == 1:
+            #                 input = torch.cat([next_state,actor.forward(next_state)],-1)
+            #             else :
+            #                 input = self.state_embedding.forward(next_state)
+            #             next_Q1, next_Q2 = self.PVN_Target.forward(input ,param)
+            #             next_target_Q = torch.min(next_Q1,next_Q2)
+            #             target_Q = reward + (done * discount * next_target_Q).detach()
     
-                    if self.args.OFF_TYPE == 1:
-                        input = torch.cat([state,action], -1)
-                    else:
-                        input = self.state_embedding.forward(state)
+            #         if self.args.OFF_TYPE == 1:
+            #             input = torch.cat([state,action], -1)
+            #         else:
+            #             input = self.state_embedding.forward(state)
     
-                    current_Q1, current_Q2 = self.PVN.forward(input, param)
-                    pv_loss += F.mse_loss(current_Q1, target_Q)+ F.mse_loss(current_Q2, target_Q)
+            #         current_Q1, current_Q2 = self.PVN.forward(input, param)
+            #         pv_loss += F.mse_loss(current_Q1, target_Q)+ F.mse_loss(current_Q2, target_Q)
     
-                self.PVN_optimizer.zero_grad()
-                pv_loss.backward()
-                nn.utils.clip_grad_norm_(self.PVN.parameters(), 10)
-                self.PVN_optimizer.step()
-                pv_loss_list.append(pv_loss.cpu().data.numpy().flatten())
-            else :
-                pv_loss_list.append(0.0)
+            #     self.PVN_optimizer.zero_grad()
+            #     pv_loss.backward()
+            #     nn.utils.clip_grad_norm_(self.PVN.parameters(), 10)
+            #     self.PVN_optimizer.step()
+            #     pv_loss_list.append(pv_loss.cpu().data.numpy().flatten())
+            # else :
+            #     pv_loss_list.append(0.0)
 
             # Select action according to policy and add clipped noise
             noise = torch.FloatTensor(u).data.normal_(0, policy_noise).to(self.device)
