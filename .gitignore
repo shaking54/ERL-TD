@@ -4,3 +4,4 @@
 /.vscode/
 Erl-re2Ant-v2/
 log/
+wandb/

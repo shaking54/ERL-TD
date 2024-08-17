@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 from torch.nn import functional as F
+from torch.distributions import Normal
 from parameters import Parameters
 from core import replay_memory
 from core.mod_utils import is_lnorm_key
@@ -29,6 +30,7 @@ class GeneticAgent:
 
         self.buffer = replay_memory.ReplayMemory(self.args.individual_bs, args.device)
         self.loss = nn.MSELoss()
+        self.state_embedding = None
 
     def keep_consistency(self, z_old, z_new):
         target_action = self.old_actor.select_action_from_z(z_old).detach()
@@ -106,12 +108,24 @@ class shared_state_embedding(nn.Module):
 
 
 class Actor(nn.Module):
+
     def __init__(self, args, init=False):
         super(Actor, self).__init__()
         self.args = args
+        self.max_action = 1 if args.max_action is None else args.max_action
         l1 = args.ls; l2 = args.ls; l3 = l2
+
+        # Construct Hidden Layer 1
+        self.w_l1 = nn.Linear(args.state_dim, l1)
+        if self.args.use_ln: self.lnorm1 = LayerNorm(l1)
+
+        # Hidden Layer 2
+        self.w_l2 = nn.Linear(l1, l2)
+        if self.args.use_ln: self.lnorm2 = LayerNorm(l2)
+
         # Out
         self.w_out = nn.Linear(l3, args.action_dim)
+
         # Init
         if init:
             self.w_out.weight.data.mul_(0.1)
@@ -119,19 +133,30 @@ class Actor(nn.Module):
 
         self.to(self.args.device)
 
-    def forward(self, input, state_embedding):
-        s_z = state_embedding.forward(input)
-        action = self.w_out(s_z).tanh()
-        return action
+    def forward(self, input, state_embedding=None):
 
-    def select_action_from_z(self,s_z):
+        # Hidden Layer 1
+        out = self.w_l1(input)
+        if self.args.use_ln: out = self.lnorm1(out)
+        out = out.tanh()
 
-        action = self.w_out(s_z).tanh()
-        return action
+        # Hidden Layer 2
+        out = self.w_l2(out)
+        if self.args.use_ln: out = self.lnorm2(out)
+        out = out.tanh()
 
-    def select_action(self, state, state_embedding):
+        # Out
+        out = (self.w_out(out)).tanh()
+        return out
+
+    def evaluate(self, state, state_embedding=None):
+        action = self.forward(state)
+        log_prob = Normal(0, 1).log_prob(action).sum(dim=-1)
+        return action * self.max_action, log_prob
+
+    def select_action(self, state):
         state = torch.FloatTensor(state.reshape(1, -1)).to(self.args.device)
-        return self.forward(state, state_embedding).cpu().data.numpy().flatten()
+        return self.forward(state).cpu().data.numpy().flatten()
 
     def get_novelty(self, batch):
         state_batch, action_batch, _, _, _ = batch
@@ -185,37 +210,74 @@ class Actor(nn.Module):
             count += param.numel()
         return count
 
-class Mlp(nn.Module):
-    def __init__(
-            self,
-            input_size,
-            hidden_sizes,
-            output_size
-    ):
-        super().__init__()
-        # TODO: initialization
-        self.fcs = []
-        self.norms = []
-        self.hidden_sizes = hidden_sizes
-        in_size = input_size
-        for i, next_size in enumerate(hidden_sizes):
-            fc = nn.Linear(in_size, next_size)
-            norm = LayerNorm(next_size)
-            self.add_module(f'fc{i}', fc)
-            self.add_module(f'norm{i}', norm)
-            self.fcs.append(fc)
-            self.norms.append(norm)
-            in_size = next_size
-        self.last_fc = nn.Linear(in_size, output_size)
-        self.last_fc.weight.data.mul_(0.1)
-        self.last_fc.bias.data.mul_(0.1)
+# class Mlp(nn.Module):
+#     def __init__(
+#             self,
+#             input_size,
+#             hidden_sizes,
+#             output_size
+#     ):
+#         super().__init__()
+#         # TODO: initialization
+#         self.fcs = []
+#         self.norms = []
+#         self.hidden_sizes = hidden_sizes
+#         in_size = input_size
+#         for i, next_size in enumerate(hidden_sizes):
+#             fc = nn.Linear(in_size, next_size)
+#             norm = LayerNorm(next_size)
+#             self.add_module(f'fc{i}', fc)
+#             self.add_module(f'norm{i}', norm)
+#             self.fcs.append(fc)
+#             self.norms.append(norm)
+#             in_size = next_size
+#         self.last_fc = nn.Linear(in_size, output_size)
+#         self.last_fc.weight.data.mul_(0.1)
+#         self.last_fc.bias.data.mul_(0.1)
 
-    def forward(self, input):
-        h = input
-        for i, fc in enumerate(self.fcs):
-            h = F.leaky_relu(self.norms[i](fc(h)))
-        output = self.last_fc(h)
-        return output
+#     def forward(self, input):
+#         h = input
+#         for i, fc in enumerate(self.fcs):
+#             h = F.leaky_relu(self.norms[i](fc(h)))
+#         output = self.last_fc(h)
+#         return output
+
+class Mlp(nn.Module):
+    def __init__(self, args):
+        super(Mlp, self).__init__()
+        self.args = args
+
+        l1 = 200; l2 = 300; l3 = l2
+
+        # Construct input interface (Hidden Layer 1)
+        self.w_state_l1 = nn.Linear(args.state_dim, l1)
+        self.w_action_l1 = nn.Linear(args.action_dim, l1)
+
+        # Hidden Layer 2
+        self.w_l2 = nn.Linear(2*l1, l2)
+        if self.args.use_ln: self.lnorm2 = LayerNorm(l2)
+
+        # Out
+        self.w_out = nn.Linear(l3, 1)
+        self.w_out.weight.data.mul_(0.1)
+        self.w_out.bias.data.mul_(0.1)
+
+        self.to(self.args.device)
+
+    def forward(self, input, action):
+
+        # Hidden Layer 1 (Input Interface)
+        out_state = F.elu(self.w_state_l1(input))
+        out_action = F.elu(self.w_action_l1(action))
+        out = torch.cat((out_state, out_action), 1)
+
+        # Hidden Layer 2
+        out = self.w_l2(out)
+        if self.args.use_ln: out = self.lnorm2(out)
+        out = F.elu(out)
+        # Output interface
+        out = self.w_out(out)
+        return out
 
 class Critic(nn.Module):
     def __init__(self, args, n_nets=4):
@@ -223,17 +285,14 @@ class Critic(nn.Module):
         self.nets = []
         self.n_nets = n_nets
         for i in range(n_nets):
-            net = Mlp(args.state_dim + args.action_dim, [512, 512, 512], 1)
+            net = Mlp(args)
             self.add_module(f'qf{i}', net)
             self.nets.append(net)
 
     def forward(self, state, action, different=False):
-        sa = torch.cat((state, action), dim=-1)
-        quantiles = torch.stack(tuple(net(sa) for net in self.nets), dim=1)
+        # sa = torch.cat((state, action), dim=-1)
+        quantiles = torch.stack(tuple(net(state, action) for net in self.nets), dim=1)
         return quantiles
-
-
-
 
 class Policy_Value_Network(nn.Module):
     def __init__(self, args, n_nets=4):
@@ -282,17 +341,20 @@ class DDPG(object):
 
         self.args = args
         self.buffer = replay_memory.ReplayMemory(args.individual_bs, args.device)
-
+        self.alpha = torch.tensor(0.1).to(args.device)
         self.actor = Actor(args, init=True)
         self.actor_target = Actor(args, init=True)
-        self.actor_optim = Adam(self.actor.parameters(), lr=0.5e-4)
+        self.actor_optimizer = Adam(self.actor.parameters(), lr=0.5e-4)
 
         self.critic = Critic(args)
         self.critic_target = Critic(args)
-        self.critic_optim = Adam(self.critic.parameters(), lr=0.5e-3)
+        self.critic_optimizer = Adam(self.critic.parameters(), lr=0.5e-3)
 
         self.gamma = args.gamma; self.tau = self.args.tau
         self.loss = nn.MSELoss()
+
+        self.device = args.device
+        self.state_embedding = None
 
         hard_update(self.actor_target, self.actor)  # Make sure target is with the same weight
         hard_update(self.critic_target, self.critic)
@@ -350,6 +412,80 @@ class DDPG(object):
         soft_update(self.critic_target, self.critic, self.tau)
 
         return policy_grad_loss.data.cpu().numpy(), delta.data.cpu().numpy()
+
+    def train(self,evo_times,all_fitness, all_gen , on_policy_states, on_policy_params, on_policy_discount_rewards,on_policy_actions,replay_buffer, iterations, batch_size=64, discount=0.99, tau=0.005, policy_noise=0.2,
+              noise_clip=0.5, policy_freq=2, train_OFN_use_multi_actor= False, pop = None):
+        actor_loss_list =[]
+        critic_loss_list =[]
+        pre_loss_list = []
+        pv_loss_list = [0.0]
+        keep_c_loss = [0.0]
+
+        for it in range(iterations):
+                
+            x, y, u, r, d, _ ,_= replay_buffer.sample(batch_size)
+            state = torch.FloatTensor(x).to(self.device)
+            action = torch.FloatTensor(u).to(self.device)
+            next_state = torch.FloatTensor(y).to(self.device)
+            done = torch.FloatTensor(1 - d).to(self.device)
+            reward = torch.FloatTensor(r).to(self.device)
+
+            sample_next_action, next_log_prob = self.actor_target.evaluate(next_state)
+
+            # Compute the target Q value
+            target_Q = self.critic_target(next_state, sample_next_action)
+            std_target_Q, mean_target_Q = torch.std_mean(target_Q, 1)
+            history_target_std = replay_buffer.update(self.args, std_target_Q)
+            history_target_std = torch.FloatTensor(np.array(history_target_std)).unsqueeze(-1).to(self.device)
+            history_target_std_std, _ = torch.std_mean(history_target_std[:, 1:], 1)
+            over_target_std = torch.where(std_target_Q > 1, std_target_Q**0.9, std_target_Q)
+            if self.args.bellman_mode == "TV":
+                overstimate = torch.where((history_target_std_std > self.args.std_std_threshold), over_target_std, std_target_Q * 0)
+            elif self.args.bellman_mode == "NV":
+                overstimate = 0
+            elif self.args.bellman_mode == "NT":
+                overstimate = over_target_std
+            #overstimate = torch.where(history_target_std_std > self.args.std_std_threshold, std_target_Q ** 0.9, std_target_Q * 0)
+            
+            target_Q = reward + (done * discount * (mean_target_Q - overstimate)).detach()
+            
+            # Get current Q estimates
+            current_Q= self.critic(state, action)
+
+            # Compute critic loss
+            critic_loss = F.mse_loss(current_Q.squeeze(-1), target_Q.expand(-1, self.args.n_nets))
+
+            # Optimize the critic
+            self.critic_optimizer.zero_grad()
+            critic_loss.backward()
+            nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
+            self.critic_optimizer.step()
+            critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
+
+            # Delayed policy updates
+            if it % policy_freq == 0:
+                actor, log_prob = self.actor.evaluate(state)
+                # Compute actor loss
+                actor_loss = -self.critic(state, actor).mean() + self.alpha.detach() *log_prob.mean()
+                # Optimize the actor
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward(retain_graph=True)
+                nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
+                self.actor_optimizer.step()
+
+                for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+
+                for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+
+                # for param, target_param in zip(self.PVN.parameters(), self.PVN_Target.parameters()):
+                #     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+
+                actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
+                pre_loss_list.append(0.0)
+
+        return np.mean(actor_loss_list) , np.mean(critic_loss_list), np.mean(pre_loss_list),np.mean(pv_loss_list), np.mean(keep_c_loss)
 
 def fanin_init(size, fanin=None):
     v = 0.008

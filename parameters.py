@@ -1,9 +1,12 @@
 import pprint
 import torch
 import os
-# import wandb
-# os.environ["WANDB_API_KEY"] = "87d3bcceeee189f5b0c3ae70f3ecd25e871746f4"
+import wandb
+os.environ["WANDB_API_KEY"] = "bd4f9ed4f0e350a34c7ef0ea98f697dd7cb718fe"
 # os.environ["WANDB_MODE"] = "offline"
+
+wandb.init(project="Erl-re2",name="ddpg-ver3")
+
 class Parameters:
     def __init__(self, cla, init=True):
         if not init:
@@ -61,7 +64,7 @@ class Parameters:
         self.learn_start = (1 + self.buffer_size / self.batch_size) * 2
         self.total_steps = self.num_frames
         self.histroy_std_num = 15
-        self.std_std_threshold = 0.28
+        self.std_std_threshold = 0.1
         # ========================================== NeuroEvolution Params =============================================
 
         # Num of trials

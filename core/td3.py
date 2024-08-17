@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 from torch.nn import functional as F
+from torch.autograd import grad
 from parameters import Parameters
 from core import replay_memory
 from core.mod_utils import is_lnorm_key
@@ -235,16 +236,21 @@ class Critic(nn.Module):
         l1 = 400;
         l2 = 300;
         l3 = l2
-
+        
         self.Q1_nets = []
         self.Q2_nets = []
 
         for i in range(n_nets):
             self.Q1_network = Q_network(args, l1, l2, l3)
             self.Q2_network = Q_network(args, l1, l2, l3)
-        
+
+            self.add_module('Q1_network_' + str(i), self.Q1_network)
+            self.add_module('Q2_network_' + str(i), self.Q2_network)
+            
             self.Q1_nets.append(self.Q1_network)
             self.Q2_nets.append(self.Q2_network)
+
+        self.all_nets = self.Q1_nets + self.Q2_nets
 
     def forward(self, state, action):
         sa = torch.cat((state, action), dim=-1)
@@ -270,8 +276,8 @@ class Critic(nn.Module):
             # Output interface
             out_1 = net.w_out(out)
             out_all = torch.cat([out_all, out_1.unsqueeze(1)], 1).to(self.args.device)
-        _, mean_Q1 = torch.std_mean(out_all, 1)
-        return mean_Q1
+        
+        return torch.max(out_all, 1)[0] 
 
 
 
@@ -429,7 +435,10 @@ class TD3(object):
         self.critic = Critic(args, n_nets=2).to(self.device)
         self.critic_target = Critic(args, n_nets=2).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr=1e-3)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
+        self.critic_optimizers = [
+            torch.optim.Adam(critic.parameters(), lr=1e-3) for critic in self.critic.all_nets
+        ]
 
         self.buffer = replay_memory.ReplayMemory(args.individual_bs, args.device)
 
@@ -537,18 +546,17 @@ class TD3(object):
             
             std_target_Q, mean_target_Q = torch.std_mean(torch.stack([mean_target_Q1, mean_target_Q2], dim=1), 1)
 
-            target_Q = torch.min(target_Q1, target_Q2)
-            target_Q = reward + (done * discount * (mean_target_Q + torch.max(underestimate_Q1, underestimate_Q2))).detach()
+            target_Q = torch.min(mean_target_Q1, mean_target_Q2)
+            target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2) + torch.max(underestimate_Q1, underestimate_Q2))
             
             # Get current Q estimates
             current_Q1, current_Q2 = self.critic(state, action)
 
-            _, mean_target_Q1 = torch.std_mean(current_Q1, 1)
-            _, mean_target_Q2 = torch.std_mean(current_Q2, 1)
+            # _, mean_target_Q1 = torch.std_mean(current_Q1, 1)
+            # _, mean_target_Q2 = torch.std_mean(current_Q2, 1)
 
             # Compute critic loss
-            critic_loss = F.mse_loss(mean_target_Q1, target_Q) + F.mse_loss(mean_target_Q2, target_Q)
- 
+            critic_loss = F.mse_loss(torch.mean(current_Q1, dim=1), target_Q) + F.mse_loss(torch.mean(current_Q2, dim=1), target_Q)
             # Optimize the critic
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
@@ -561,10 +569,10 @@ class TD3(object):
 
                 # Compute actor loss
                 s_z= self.state_embedding.forward(state)
-                actor_loss = -self.critic.Q1(state, self.actor.select_action_from_z(s_z)).mean()
+                actor_loss = -1*torch.mean(self.critic.Q1(state, self.actor.select_action_from_z(s_z)))
                 # Optimize the actor
                 self.actor_optimizer.zero_grad()
-                actor_loss.backward(retain_graph=True)
+                actor_loss.backward(create_graph=True, retain_graph=True)
                 nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
                 self.actor_optimizer.step()
 
@@ -586,12 +594,12 @@ class TD3(object):
                             new_actor_loss += -self.PVN.Q1(input,param).mean()
                     evo_times += 1
 
-                    total_loss = self.args.actor_alpha * actor_loss  + self.args.EA_actor_alpha* new_actor_loss
+                    total_loss = (self.args.actor_alpha * actor_loss.detach().requires_grad_(True) + self.args.EA_actor_alpha* new_actor_loss)
                 else :
-                    total_loss = self.args.actor_alpha * actor_loss
+                    total_loss = (self.args.actor_alpha * actor_loss.detach().requires_grad_(True))
 
                 self.state_embedding_optimizer.zero_grad()
-                # total_loss.backward()
+                total_loss.backward()
                 nn.utils.clip_grad_norm_(self.state_embedding.parameters(), 10)
                 self.state_embedding_optimizer.step()
                 # Update the frozen target models

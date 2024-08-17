@@ -104,7 +104,7 @@ torch.manual_seed(parameters.seed)
 np.random.seed(parameters.seed)
 random.seed(parameters.seed)
 
-from core import mod_utils as utils, agent, td3_agent
+from core import mod_utils as utils, agent, td3_agent, ddpg_agent
 tracker = utils.Tracker(parameters, ['erl'], '_score.csv')  # Initiate tracker
 frame_tracker = utils.Tracker(parameters, ['frame_erl'], '_score.csv')  # Initiate tracker
 time_tracker = utils.Tracker(parameters, ['time_erl'], '_score.csv')
@@ -151,8 +151,12 @@ if __name__ == "__main__":
     # Create Agent
     if parameters.agent == 'td3':
         agent = td3_agent.Agent(parameters, env)
-    else:
+    elif parameters.agent == 'sac':
         agent = agent.Agent(parameters, env)
+    elif parameters.agent == 'ddpg':
+        agent = ddpg_agent.Agent(parameters, env)
+    else:
+        raise ValueError('Unknown agent type:', parameters.agent)
     print('Running', parameters.env_name, ' State_dim:', parameters.state_dim, ' Action_dim:', parameters.action_dim, 'Agent', parameters.agent)
 
     next_save = parameters.next_save; time_start = time.time()
