@@ -110,6 +110,7 @@ class Actor(nn.Module):
         self.min_log_std = min_log_std
         self.max_log_std = max_log_std
         self.net = Mlp(self.state_dim, [256, 256], 2 * self.action_dim)
+        self.net.to(self.args.device)
 
     def forward(self, obs):
         mean, log_std = self.net(obs).split([self.action_dim, self.action_dim], dim=1)
@@ -196,7 +197,7 @@ class Actor(nn.Module):
             count += param.numel()
         return count
 
-class Mlp(Module):
+class Mlp(nn.Module):
     def __init__(
             self,
             input_size,
@@ -230,6 +231,7 @@ class Critic(nn.Module):
         self.top_quantiles_to_drop_per_net = top_quantiles_to_drop_per_net
         for i in range(n_nets):
             net = Mlp(args.state_dim + args.action_dim, [512, 512, 512], 1)
+            net.to(args.device)
             self.add_module(f'qf{i}', net)
             self.nets.append(net)
 
@@ -318,7 +320,7 @@ class TQC(object):
                 sorted_next_quantiles_part = sorted_next_quantiles[:, :self.quantiles_total - self.top_quantiles_to_drop]
 
                 # compute target
-                target_Q = reward + (done * discount * (sorted_next_quantiles_part - self.alpha * next_log_prob)).detach()
+                target_Q = reward + (done * discount * (sorted_next_quantiles_part - self.alpha * next_log_prob))
 
             cur_Q = self.critic(state, action)
             critic_loss = quantile_huber_loss_f(cur_Q, target_Q, self.device)

@@ -110,15 +110,24 @@ class shared_state_embedding(nn.Module):
 
 
 class Actor(nn.Module):
+
     def __init__(self, args, init=False):
         super(Actor, self).__init__()
         self.args = args
-        self.max_action = 1 if args.max_action is None else args.max_action
+        self.max_action = args.max_action
         l1 = args.ls; l2 = args.ls; l3 = l2
+
+        # Construct Hidden Layer 1
+        self.w_l1 = nn.Linear(args.state_dim, l1)
+        if self.args.use_ln: self.lnorm1 = LayerNorm(l1)
+
+        # Hidden Layer 2
+        self.w_l2 = nn.Linear(l1, l2)
+        if self.args.use_ln: self.lnorm2 = LayerNorm(l2)
+
         # Out
-        self.fc1 = nn.Linear(args.state_dim, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.w_out = nn.Linear(256, args.action_dim)
+        self.w_out = nn.Linear(l3, args.action_dim)
+
         # Init
         if init:
             self.w_out.weight.data.mul_(0.1)
@@ -127,10 +136,20 @@ class Actor(nn.Module):
         self.to(self.args.device)
 
     def forward(self, input):
-        out = F.relu(self.fc1(input))
-        out = F.relu(self.fc2(out))
-        action = self.w_out(out).tanh()
-        return action
+
+        # Hidden Layer 1
+        out = self.w_l1(input)
+        if self.args.use_ln: out = self.lnorm1(out)
+        out = out.tanh()
+
+        # Hidden Layer 2
+        out = self.w_l2(out)
+        if self.args.use_ln: out = self.lnorm2(out)
+        out = out.tanh()
+
+        # Out
+        out = (self.w_out(out)).tanh()
+        return out
 
     def evaluate(self, state):
         action = self.forward(state)
@@ -138,7 +157,7 @@ class Actor(nn.Module):
         return action * self.max_action, log_prob
 
     def select_action_from_z(self,s_z):
-        action = self.w_out(s_z).tanh()
+        action = self.forward(s_z)
         return action
 
     def select_action(self, state):
@@ -231,7 +250,7 @@ class Q_network(nn.Module):
 
 class Critic(nn.Module):
 
-    def __init__(self, args, n_nets = 2):
+    def __init__(self, args, n_nets = 3):
         super(Critic, self).__init__()
         self.args = args
 
@@ -337,7 +356,7 @@ class Policy_Value_Network(nn.Module):
 
         self.to(self.args.device)
 
-    def forward(self,  input,param):
+    def forward(self,  input ,param):
         reshape_param = param.reshape([-1,self.args.ls + 1])
 
         out_p = F.leaky_relu(self.policy_w_l1(reshape_param))
@@ -434,8 +453,8 @@ class TD3(object):
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
 
-        self.critic = Critic(args, n_nets=1).to(self.device)
-        self.critic_target = Critic(args, n_nets=1).to(self.device)
+        self.critic = Critic(args, n_nets=3).to(self.device)
+        self.critic_target = Critic(args, n_nets=3).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
         self.critic_optimizers = [
@@ -445,10 +464,10 @@ class TD3(object):
         self.buffer = replay_memory.ReplayMemory(args.individual_bs, args.device)
 
 
-        self.PVN = Policy_Value_Network(args).to(self.device)
-        self.PVN_Target = Policy_Value_Network(args).to(self.device)
-        self.PVN_Target.load_state_dict(self.PVN.state_dict())
-        self.PVN_optimizer = torch.optim.Adam([{'params': self.PVN.parameters()}],lr=1e-3)
+        # self.PVN = Policy_Value_Network(args).to(self.device)
+        # self.PVN_Target = Policy_Value_Network(args).to(self.device)
+        # self.PVN_Target.load_state_dict(self.PVN.state_dict())
+        # self.PVN_optimizer = torch.optim.Adam([{'params': self.PVN.parameters()}],lr=1e-3)
 
         # self.state_embedding = shared_state_embedding(args)
         # self.state_embedding_target = shared_state_embedding(args)
@@ -464,7 +483,7 @@ class TD3(object):
 
     def approximate_underestimate(self, std_target_Q, replay_buffer):
         history_target_std = replay_buffer.update(self.args, std_target_Q)
-        history_target_std = torch.FloatTensor(history_target_std).unsqueeze(-1).to(self.device)
+        history_target_std = torch.FloatTensor(np.array(history_target_std)).unsqueeze(-1).to(self.device)
         history_target_std_std, _ = torch.std_mean(history_target_std[:, 1:], 1)
         over_target_std = torch.where(std_target_Q < 1, std_target_Q**0.9, std_target_Q)
         if self.args.bellman_mode == "TV":
@@ -493,45 +512,6 @@ class TD3(object):
             done = torch.FloatTensor(1 - d).to(self.device)
             reward = torch.FloatTensor(r).to(self.device)
             
-            if self.args.EA:
-                if self.args.use_all:
-                    use_actors = all_actor
-                else :
-                    index = random.sample(list(range(self.args.pop_size+1)), 1)[0]
-                    use_actors = [all_actor[index]]
-
-                # off policy update
-                pv_loss = 0.0
-                for actor in use_actors:
-                    param = nn.utils.parameters_to_vector(list(actor.parameters())).data.cpu().numpy()
-                    param = torch.FloatTensor(param).to(self.device)
-                    param = param.repeat(len(state), 1)
-    
-                    with torch.no_grad():
-                        if self.args.OFF_TYPE == 1:
-                            input = torch.cat([next_state,actor.forward(next_state)],-1)
-                        else :
-                            input = self.state_embedding.forward(next_state)
-                        next_Q1, next_Q2 = self.PVN_Target.forward(input ,param)
-                        next_target_Q = torch.min(next_Q1,next_Q2)
-                        target_Q = reward + (done * discount * next_target_Q).detach()
-    
-                    if self.args.OFF_TYPE == 1:
-                        input = torch.cat([state,action], -1)
-                    else:
-                        input = self.state_embedding.forward(state)
-    
-                    current_Q1, current_Q2 = self.PVN.forward(input, param)
-                    pv_loss += F.mse_loss(current_Q1, target_Q)+ F.mse_loss(current_Q2, target_Q)
-    
-                self.PVN_optimizer.zero_grad()
-                pv_loss.backward()
-                nn.utils.clip_grad_norm_(self.PVN.parameters(), 10)
-                self.PVN_optimizer.step()
-                pv_loss_list.append(pv_loss.cpu().data.numpy().flatten())
-            else :
-                pv_loss_list.append(0.0)
-
             # Select action according to policy and add clipped noise
             noise = torch.FloatTensor(u).data.normal_(0, policy_noise).to(self.device)
             noise = noise.clamp(-noise_clip, noise_clip)
@@ -548,8 +528,8 @@ class TD3(object):
             
             std_target_Q, mean_target_Q = torch.std_mean(torch.stack([mean_target_Q1, mean_target_Q2], dim=1), 1)
 
-            target_Q = torch.min(mean_target_Q1, mean_target_Q2)
-            target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2) + torch.max(underestimate_Q1, underestimate_Q2))
+            # target_Q = torch.min(mean_target_Q1, mean_target_Q2)
+            target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2))
             
             # Get current Q estimates
             current_Q1, current_Q2 = self.critic(state, action)
@@ -574,7 +554,7 @@ class TD3(object):
                 actor_loss = -1*torch.mean(self.critic.Q1(state, self.actor.select_action_from_z(s_z)))
                 # Optimize the actor
                 self.actor_optimizer.zero_grad()
-                actor_loss.backward(create_graph=True, retain_graph=True)
+                actor_loss.backward()
                 nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
                 self.actor_optimizer.step()
 
@@ -606,16 +586,10 @@ class TD3(object):
                 # self.state_embedding_optimizer.step()
                 # Update the frozen target models
                 
-                for param, target_param in zip(self.state_embedding.parameters(), self.state_embedding_target.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-                
                 for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
                     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
                 for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-
-                for param, target_param in zip(self.PVN.parameters(), self.PVN_Target.parameters()):
                     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
                 actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
