@@ -170,7 +170,7 @@ class Agent:
 
     def train_td3(self, evo_times,all_fitness, state_list_list,reward_list_list, policy_params_list_list,action_list_list):
         bcs_loss, pgs_loss,c_q,t_q = [], [],[],[]
-        if len(self.replay_buffer.storage) >= 5000:#self.args.batch_size * 5:
+        if len(self.replay_buffer.storage) >= 5000: #self.args.batch_size * 5:
             before_rewards = np.zeros(len(self.pop))
 
             # sac.hard_update(self.rl_agent.old_state_embedding, self.rl_agent.state_embedding)
@@ -221,7 +221,7 @@ class Agent:
         if self.args.EA and self.rl_agent_frames>=self.args.init_steps:
             self.evo_times +=1
             random_num_num = random.random()
-            if random_num_num< 0.2:
+            if random_num_num < 0.2:
                 for i, net in enumerate(self.pop):
                     for _ in range(self.args.num_evals):
                         episode = self.evaluate(net, is_render=False, is_action_noise=False,net_index=i)

@@ -1,4 +1,3 @@
-
 from torch.autograd import Variable
 import random, pickle
 import numpy as np
