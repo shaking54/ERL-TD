@@ -5,7 +5,7 @@ import wandb
 os.environ["WANDB_API_KEY"] = "bd4f9ed4f0e350a34c7ef0ea98f697dd7cb718fe"
 # os.environ["WANDB_MODE"] = "offline"
 
-wandb.init(project="Erl-re2",name="ddpg-ver3")
+wandb.init(project="Erl-re2",name="TQC")
 
 class Parameters:
     def __init__(self, cla, init=True):

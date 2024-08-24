@@ -328,35 +328,6 @@ class TQC(object):
             critic_loss.backward()
             self.critic_optimizer.step()
 
-            # Compute the target Q value
-            # target_Q = self.critic_target(next_state, sample_next_action)
-            # std_target_Q, mean_target_Q = torch.std_mean(target_Q, 1)
-            # history_target_std = replay_buffer.update(self.args, std_target_Q)
-            # history_target_std = torch.FloatTensor(history_target_std).unsqueeze(-1).to(self.device)
-            # history_target_std_std, _ = torch.std_mean(history_target_std[:, 1:], 1)
-            # over_target_std = torch.where(std_target_Q > 1, std_target_Q**0.9, std_target_Q)
-            # if self.args.bellman_mode == "TV":
-            #     overstimate = torch.where((history_target_std_std > self.args.std_std_threshold), over_target_std, std_target_Q * 0)
-            # elif self.args.bellman_mode == "NV":
-            #     overstimate = 0
-            # elif self.args.bellman_mode == "NT":
-            #     overstimate = over_target_std
-            #overstimate = torch.where(history_target_std_std > self.args.std_std_threshold, std_target_Q ** 0.9, std_target_Q * 0)
-            # target_Q = reward + (done * discount * (mean_target_Q - self.alpha * next_log_prob - overstimate)).detach()
-            
-            # Get current Q estimates
-            # current_Q= self.critic(state, action)
-
-            # Compute critic loss
-            # critic_loss = F.mse_loss(current_Q.squeeze(-1), target_Q.expand(-1, self.args.n_nets))
-
-            # Optimize the critic
-            # self.critic_optimizer.zero_grad()
-            # critic_loss.backward()
-            # nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
-            # self.critic_optimizer.step()
-            # critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
-
             # Delayed policy updates
             if it % policy_freq == 0:
                  # --- Policy and alpha loss ---
