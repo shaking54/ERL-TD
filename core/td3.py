@@ -652,7 +652,10 @@ class TD3(object):
                 std_target_Q1, mean_target_Q1 = torch.std_mean(quantiles_target_Q1, 1)
                 std_target_Q2, mean_target_Q2 = torch.std_mean(quantiles_target_Q2, 1)
 
-                target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2) + torch.max(std_target_Q1, std_target_Q2)).detach()
+                approximated_underestimate_Q1 = self.approximate_underestimate(std_target_Q1, replay_buffer)
+                approximated_underestimate_Q2 = self.approximate_underestimate(std_target_Q2, replay_buffer)
+
+                target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2) + torch.max(approximated_underestimate_Q1, approximated_underestimate_Q2)).detach()
 
             for critic, critic_target, critic_optimizer in zip(self.critic.critics, self.critic_target.critics, self.critic_optimizer):
                 # Get current Q estimates
@@ -677,7 +680,7 @@ class TD3(object):
                 # Compute actor loss
                 # s_z = state
                 current_quantiles_Q1, current_quantiles_Q2 = self.critic(state, action)
-                actor_loss = -1*torch.mean(current_quantiles_Q1) + self.alpha.detach() *log_prob.mean()
+                actor_loss = -1*torch.mean(current_quantiles_Q1) + self.args.actor_alpha*log_prob.mean()
                 # Optimize the actor
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
