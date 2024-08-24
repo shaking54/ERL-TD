@@ -311,16 +311,16 @@ class TQC(object):
             done = torch.FloatTensor(1 - d).to(self.device)
             reward = torch.FloatTensor(r).to(self.device)
 
-            # with torch.no_grad():
-            sample_next_action, next_log_prob, z, batch_mu, batch_log_sigma = self.actor.evaluate(next_state)
+            with torch.no_grad():
+                sample_next_action, next_log_prob, z, batch_mu, batch_log_sigma = self.actor.evaluate(next_state)
 
-            # compute and cut quantiles at the next action
-            next_quantiles = self.critic_target(next_state, sample_next_action)
-            sorted_next_quantiles, _ = torch.sort(next_quantiles.reshape(batch_size, -1))
-            sorted_next_quantiles_part = sorted_next_quantiles[:, :self.quantiles_total - self.top_quantiles_to_drop]
+                # compute and cut quantiles at the next action
+                next_quantiles = self.critic_target(next_state, sample_next_action)
+                sorted_next_quantiles, _ = torch.sort(next_quantiles.reshape(batch_size, -1))
+                sorted_next_quantiles_part = sorted_next_quantiles[:, :self.quantiles_total - self.top_quantiles_to_drop]
 
-            # compute target
-            target_Q = reward + (done * discount * (sorted_next_quantiles_part - self.alpha * next_log_prob))
+                # compute target
+                target_Q = reward + (done * discount * (sorted_next_quantiles_part - self.alpha * next_log_prob))
 
             cur_Q = self.critic(state, action)
             critic_loss = quantile_huber_loss_f(cur_Q, target_Q, self.device)
@@ -331,28 +331,28 @@ class TQC(object):
             self.critic_optimizer.step()
 
             # Delayed policy updates
-            if it % policy_freq == 0:
+            # if it % policy_freq == 0:
                  # --- Policy and alpha loss ---
-                new_action, log_pi = self.actor(state)
-                alpha_loss = -self.log_alpha * (log_pi + self.target_entropy).detach().mean()
-                actor_loss = (self.args.alpha * log_pi - self.critic(state, new_action).mean(2).mean(1, keepdim=True)).mean()
+            new_action, log_pi = self.actor(state)
+            alpha_loss = -self.log_alpha * (log_pi + self.target_entropy).detach().mean()
+            actor_loss = (self.args.alpha * log_pi - self.critic(state, new_action).mean(2).mean(1, keepdim=True)).mean()
 
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward()
-                self.actor_optimizer.step()
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor_optimizer.step()
 
-                self.alpha_optimizer.zero_grad()
-                alpha_loss.backward()
-                self.alpha_optimizer.step()
+            self.alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
 
-                for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-                # for param, target_param in zip(self.PVN.parameters(), self.PVN_Target.parameters()):
-                #     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+            # for param, target_param in zip(self.PVN.parameters(), self.PVN_Target.parameters()):
+            #     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-                actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
-                pre_loss_list.append(0.0)
+            actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
+            pre_loss_list.append(0.0)
 
         return np.mean(actor_loss_list) , np.mean(critic_loss_list), np.mean(pre_loss_list),np.mean(pv_loss_list), np.mean(keep_c_loss)
 
