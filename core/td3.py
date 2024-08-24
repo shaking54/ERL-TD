@@ -332,6 +332,49 @@ class Critic(nn.Module):
         out_1 = self.w_out(out)
         return out_1
 
+class Ensemble_Critics(nn.Module):
+    def __init__(self, args, n_nets = 4):
+        super(Ensemble_Critics, self).__init__()
+        self.args = args
+
+        l1 = 400;
+        l2 = 300;
+        l3 = l2
+
+        self.n_nets = n_nets
+        self.critics = [
+            Critic(args) for _ in range(n_nets)
+        ]
+
+    def forward(self, input, action):
+        Q1_value = torch.tensor([]).to(self.args.device)
+        Q2_value = torch.tensor([]).to(self.args.device)
+
+        for critic in self.critics:
+            current_Q1, current_Q2 = critic(input, action)
+            Q1_value = torch.cat([Q1_value, current_Q1.unsqueeze(1)], 1).to(self.args.device)
+            Q2_value = torch.cat([Q2_value, current_Q2.unsqueeze(1)], 1).to(self.args.device)
+
+        return Q1_value, Q2_value
+
+    def Q1(self, input, action):
+        concat_input = torch.cat([input, action], -1)
+        
+        out_all = torch.tensor([]).to(self.args.device)
+        for net in self.critics:
+            out = net.w_l1(concat_input)
+            if self.args.use_ln:out = net.lnorm1(out)
+
+            out = F.leaky_relu(out)
+            # Hidden Layer 2
+            out = net.w_l2(out)
+            if self.args.use_ln: out = net.lnorm2(out)
+            out = F.leaky_relu(out)
+            # Output interface
+            out_1 = net.w_out(out)
+            out_all = torch.cat([out_all, out_1.unsqueeze(1)], 1).to(self.args.device)
+        return torch.max(out_all, 1)[0]
+
 
 # class Critic(nn.Module):
 
@@ -536,10 +579,13 @@ class TD3(object):
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
 
-        self.critic = Critic(args).to(self.device)
-        self.critic_target = Critic(args).to(self.device)
+        self.critic = Ensemble_Critics(args, n_nets=2).to(self.device)
+        self.critic_target = Ensemble_Critics(args, n_nets=2).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
+        # self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
+        self.critic_optimizer = [
+            torch.optim.Adam(critic.parameters(), lr=1e-3) for critic in self.critic.critics
+        ]
 
         self.buffer = replay_memory.ReplayMemory(args.individual_bs, args.device)
 
@@ -592,29 +638,91 @@ class TD3(object):
             done = torch.FloatTensor(1 - d).to(self.device)
             reward = torch.FloatTensor(r).to(self.device)
             
-            # Select action according to policy and add clipped noise
-            noise = torch.FloatTensor(u).data.normal_(0, policy_noise).to(self.device)
-            noise = noise.clamp(-noise_clip, noise_clip)
+            with torch.no_grad():
+                # Select action according to policy and add clipped noise
+                noise = torch.FloatTensor(u).data.normal_(0, policy_noise).to(self.device)
+                noise = noise.clamp(-noise_clip, noise_clip)
 
-            next_action = (self.actor_target.forward(next_state)+noise).clamp(-self.max_action, self.max_action)
+                next_action = (self.actor_target.forward(next_state)+noise).clamp(-self.max_action, self.max_action)
 
-            # Compute the target Q value
-            target_Q1, target_Q2 = self.critic_target(next_state, next_action)
-            target_Q = torch.min(target_Q1, target_Q2)
-            target_Q = reward + (done * discount * target_Q).detach()
-            
+                # Compute the target Q value
+                quantiles_target_Q1, quantiles_target_Q2 = self.critic_target(next_state, next_action)
+                quantiles_target_Q = torch.min(quantiles_target_Q1, quantiles_target_Q2)
+
+                std_target_Q1, mean_target_Q1 = torch.std_mean(quantiles_target_Q1, 1)
+                std_target_Q2, mean_target_Q2 = torch.std_mean(quantiles_target_Q2, 1)
+
+                target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2) + torch.max(std_target_Q1, std_target_Q2)).detach()
+
+            for critic, critic_target, critic_optimizer in zip(self.critic.critics, self.critic_target.critics, self.critic_optimizer):
+                # Get current Q estimates
+                current_Q1, current_Q2 = critic(state, action)
+                # std_current_Q1, mean_current_Q1 = torch.std_mean(quantiles_current_Q1)
+                # std_current_Q2, mean_current_Q2 = torch.std_mean(quantiles_current_Q2)
+
+                # Compute critic loss
+                critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+
+                # Optimize the critic
+                critic_optimizer.zero_grad()
+                critic_loss.backward()
+                nn.utils.clip_grad_norm_(critic.parameters(), 10)
+                critic_optimizer.step()
+                critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
+
+                # Delayed policy updates
+                if it % policy_freq == 0:
+
+                    # Compute actor loss
+                    s_z = state
+                    actor_loss = -1*torch.mean(critic.Q1(state, self.actor.select_action_from_z(s_z)))
+                    # Optimize the actor
+                    self.actor_optimizer.zero_grad()
+                    actor_loss.backward()
+                    nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
+                    self.actor_optimizer.step()
+
+                    for param, target_param in zip(critic.parameters(), critic_target.parameters()):
+                        target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+
+                    for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+                        target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+
+                    actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
+                    pre_loss_list.append(0.0)
             # Get current Q estimates
-            current_Q1, current_Q2 = self.critic(state, action)
+            # quantiles_current_Q1, quantiles_current_Q2 = self.critic(state, action)
+            
+            # std_current_Q1, mean_current_Q1 = torch.std_mean(quantiles_current_Q1, 1)
+            # std_current_Q2, mean_current_Q2 = torch.std_mean(quantiles_current_Q2, 1)
 
-            # Compute critic loss
-            critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+            # # Compute critic loss
+            # critic_loss = F.mse_loss(mean_current_Q1, target_Q) + F.mse_loss(mean_current_Q2, target_Q)
+
+            # # Optimize the critic
+            # self.critic_optimizer.zero_grad()
+            # critic_loss.backward()
+            # nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
+            # self.critic_optimizer.step()
+            # critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
+            
+            # # Compute the target Q value
+            # target_Q1, target_Q2 = self.critic_target(next_state, next_action)
+            # target_Q = torch.min(target_Q1, target_Q2)
+            # target_Q = reward + (done * discount * target_Q).detach()
+            
+            # # Get current Q estimates
+            # current_Q1, current_Q2 = self.critic(state, action)
+
+            # # Compute critic loss
+            # critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
  
-            # Optimize the critic
-            self.critic_optimizer.zero_grad()
-            critic_loss.backward()
-            nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
-            self.critic_optimizer.step()
-            critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
+            # # Optimize the critic
+            # self.critic_optimizer.zero_grad()
+            # critic_loss.backward()
+            # nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
+            # self.critic_optimizer.step()
+            # critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
 
             # # Select action according to policy and add clipped noise
             # noise = torch.FloatTensor(u).data.normal_(0, policy_noise).to(self.device)
@@ -651,25 +759,25 @@ class TD3(object):
             # critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
 
             # Delayed policy updates
-            if it % policy_freq == 0:
+            # if it % policy_freq == 0:
 
-                # Compute actor loss
-                s_z = state
-                actor_loss = -1*torch.mean(self.critic.Q1(state, self.actor.select_action_from_z(s_z)))
-                # Optimize the actor
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward()
-                nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
-                self.actor_optimizer.step()
+            #     # Compute actor loss
+            #     s_z = state
+            #     actor_loss = -1*torch.mean(self.critic.Q1(state, self.actor.select_action_from_z(s_z)))
+            #     # Optimize the actor
+            #     self.actor_optimizer.zero_grad()
+            #     actor_loss.backward()
+            #     nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
+            #     self.actor_optimizer.step()
                 
-                for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+            #     for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+            #         target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-                for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+            #     for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+            #         target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-                actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
-                pre_loss_list.append(0.0)
+            #     actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
+            #     pre_loss_list.append(0.0)
 
         return np.mean(actor_loss_list) , np.mean(critic_loss_list), np.mean(pre_loss_list),pv_loss_list, keep_c_loss
 
