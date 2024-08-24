@@ -2,16 +2,17 @@ import numpy as np
 from core import mod_neuro_evo as utils_ne
 from core import mod_utils as utils
 from core import replay_memory
-from core import ddpg
+from core import tqc
 from scipy.spatial import distance
 from core import replay_memory
-from parameters import Parameters, wandb
+from parameters import Parameters
 import torch
 from core import utils
 import scipy.signal
 import torch.nn as nn
 import math
 import random
+import wandb
 
 def discount(x, gamma):
     """ Calculate discounted forward sum of a sequence at each point """
@@ -26,13 +27,13 @@ class Agent:
         self.buffers = []
         self.all_actors = []
         for _ in range(args.pop_size):
-            #self.pop.append(sac.GeneticAgent(args))
-            genetic = ddpg.GeneticAgent(args)
+            #self.pop.append(tqc.GeneticAgent(args))
+            genetic = tqc.GeneticAgent(args)
             self.pop.append(genetic)
             self.all_actors.append(genetic.actor)
 
         # Init RL Agent
-        self.rl_agent = ddpg.DDPG(args)
+        self.rl_agent = tqc.TQC(args)
         self.replay_buffer = utils.ReplayBuffer(max_size = self.args.buffer_size)
         self.all_actors.append(self.rl_agent.actor)
         self.evolver = utils_ne.SSNE(self.args, self.rl_agent.critic, self.evaluate, self.args.prob_reset_and_sup, self.args.frac)
@@ -53,7 +54,7 @@ class Agent:
         self.evo_times = 0
 
 
-    def evaluate(self, agent: ddpg.GeneticAgent or ddpg.DDPG, is_render=False, is_action_noise=False, # type: ignore
+    def evaluate(self, agent: tqc.GeneticAgent or tqc.TQC, is_render=False, is_action_noise=False, # type: ignore
                  store_transition=True, net_index=None, is_random =False, rl_agent_collect_data = False,  use_n_step_return = False,PeVFA=None):
         total_reward = 0.0
         total_error = 0.0
@@ -79,7 +80,7 @@ class Agent:
         while not done:
             if store_transition:
                 self.num_frames += 1
-                if not isinstance(agent, ddpg.DDPG):
+                if not isinstance(agent, tqc.TQC):
                     self.gen_frames += 1
                 if self.num_frames % 2000 == 0:
                     eval_res = self.evaluate(self.rl_agent, store_transition=False,
@@ -91,15 +92,13 @@ class Agent:
                     wandb.log({"ep_r": eval_res['reward']})
                 if rl_agent_collect_data:
                     self.rl_agent_frames +=1
-            #if self.args.render and is_render: self.env.render()
+            #if self.args.render and is_render: self.env.render()self
             
             if is_random:
                 action = self.env.action_space.sample()
             else:
-                if store_transition:
-                    action = agent.actor.select_action(np.array(state))
-                else:
-                    action = agent.actor.select_action(np.array(state))
+                
+                action = agent.actor.select_action(np.array(state))
             all_state.append(np.array(state))
             all_action.append(np.array(action))
             # Simulate one step in environment
@@ -126,12 +125,12 @@ class Agent:
                 #self.replay_buffer.add(*transition)
                 agent.buffer.add(*transition)
                 next_action_list.append(next_action)
-            if isinstance(agent, ddpg.DDPG) and store_transition  and self.rl_agent_frames>=self.args.init_steps:
-                self.rl_agent.train(self.evo_times, None, self.pop, None, None,
+            if isinstance(agent, tqc.TQC) and store_transition  and self.rl_agent_frames>=self.args.init_steps:
+                self.rl_agent.train(None, None, self.pop, None, None,
                                     None, None, self.replay_buffer,
                                     1, 256,
                                     discount=self.args.gamma, tau=self.args.tau, policy_noise=self.args.TD3_noise,
-                                    train_OFN_use_multi_actor=self.args.random_choose)
+                                    train_OFN_use_multi_actor=self.args.random_choose, pop=self.pop)
             episode_timesteps += 1
             state = next_state
         Q_espisde_mean = 0
@@ -139,7 +138,7 @@ class Agent:
             state_tensor = torch.FloatTensor(np.array(state_list)).to(self.args.device)
             action_tensor = torch.FloatTensor(np.array(action_list)).to(self.args.device)
             next_Q = PeVFA.forward(state_tensor, action_tensor)
-            std_next_Q, mean_next_Q = torch.std_mean(next_Q, 1)
+            _, mean_next_Q = torch.std_mean(next_Q, 1)
             Q_espisde_mean = (mean_next_Q).mean().cpu().data.numpy().flatten()
         if store_transition: self.num_games += 1
 
@@ -147,7 +146,7 @@ class Agent:
                 "reward_list":reward_list, "policy_prams_list":policy_params_list, "action_list":action_list, "next_state_list":next_state_list, "next_action_list":next_action_list}
 
 
-    def rl_to_evo(self, rl_agent: ddpg.DDPG, evo_net: ddpg.GeneticAgent):
+    def rl_to_evo(self, rl_agent: tqc.TQC, evo_net: tqc.GeneticAgent):
         for target_param, param in zip(evo_net.actor.parameters(), rl_agent.actor.parameters()):
             target_param.data.copy_(param.data)
         evo_net.buffer.reset()
@@ -168,14 +167,14 @@ class Agent:
                 novelties[i] += (net.get_novelty(batch))
         return novelties / epochs
 
-    def train_ddpg(self, evo_times,all_fitness, state_list_list,reward_list_list, policy_params_list_list,action_list_list):
+    def train_tqc(self, evo_times,all_fitness, state_list_list,reward_list_list, policy_params_list_list,action_list_list):
         bcs_loss, pgs_loss,c_q,t_q = [], [],[],[]
         if len(self.replay_buffer.storage) >= 5000:#self.args.batch_size * 5:
             before_rewards = np.zeros(len(self.pop))
 
             # sac.hard_update(self.rl_agent.old_state_embedding, self.rl_agent.state_embedding)
             for gen in self.pop:
-                ddpg.hard_update(gen.old_actor, gen.actor)
+                tqc.hard_update(gen.old_actor, gen.actor)
 
             discount_reward_list_list =[]
             for reward_list in reward_list_list:
@@ -189,7 +188,7 @@ class Agent:
             #print("policy_params_list_list ", policy_params_list_list.shape)
             action_list_list = np.concatenate(np.array(action_list_list))
             batch_size = int(256 * len(self.replay_buffer.storage) / self.replay_buffer.max_size) + 32
-            pgl, delta,pre_loss,pv_loss,keep_c_loss= self.rl_agent.train(evo_times,all_fitness, self.pop , state_list_list, policy_params_list_list, discount_reward_list_list,action_list_list, self.replay_buffer ,int(self.gen_frames * self.args.frac_frames_train), batch_size, discount=self.args.gamma, tau=self.args.tau,policy_noise=self.args.TD3_noise,train_OFN_use_multi_actor=self.args.random_choose)
+            pgl, delta,pre_loss,pv_loss,keep_c_loss= self.rl_agent.train(evo_times,all_fitness, self.pop , state_list_list, policy_params_list_list, discount_reward_list_list,action_list_list, self.replay_buffer ,int(self.gen_frames * self.args.frac_frames_train), batch_size, discount=self.args.gamma, tau=self.args.tau,policy_noise=self.args.TD3_noise,train_OFN_use_multi_actor=self.args.random_choose,pop=self.pop)
             after_rewards = np.zeros(len(self.pop))
         else:
             before_rewards = np.zeros(len(self.pop))
@@ -230,7 +229,7 @@ class Agent:
                 all_fitness = real_rewards
             else:
                 for i, net in enumerate(self.pop):
-                    episode = self.evaluate(net, is_render=False, is_action_noise=False,net_index=i,use_n_step_return = True,PeVFA=self.rl_agent.critic)
+                    episode = self.evaluate(net, is_render=False, is_action_noise=False,net_index=i,use_n_step_return = True,PeVFA=self.rl_agent.critic1)
                     fake_rewards[i] = fake_rewards[i] + episode['n_step_discount_reward'] + episode['reward']
                     MC_n_steps_rewards[i]  +=episode['reward']
                 all_fitness = fake_rewards
@@ -273,7 +272,7 @@ class Agent:
             elite_index = self.evolver.epoch(self.pop, all_fitness, self.rl_agent, self.replay_buffer)
         else :
             elite_index = self.evolver.epoch_gauss(self.pop, all_fitness, self.rl_agent, self.replay_buffer)
-        # ========================== sac or ddpg ===========================
+        # ========================== sac or TD3 ===========================
         # Collect experience for training
 
         if self.args.RL:
@@ -286,7 +285,7 @@ class Agent:
             action_list_list.append(episode['action_list'])
 
             if self.rl_agent_frames>=self.args.init_steps:
-                losses, _, add_rewards = self.train_ddpg(self.evo_times,all_fitness, state_list_list,reward_list_list,policy_parms_list_list,action_list_list)
+                losses, _, add_rewards = self.train_tqc(self.evo_times,all_fitness, state_list_list,reward_list_list,policy_parms_list_list,action_list_list)
             else :
                 losses = {'bcs_loss': 0.0, 'pgs_loss': 0.0 ,"current_q":0.0, "target_q":0.0, "pv_loss":0.0, "pre_loss":0.0}
                 add_rewards = np.zeros(len(self.pop)) 

@@ -103,47 +103,24 @@ class Actor(nn.Module):
     
     def __init__(self, args, min_log_std=-20, max_log_std=2):
         super().__init__()
+
         self.args = args
-        self.action_dim = self.args.action_dim
-        self.state_dim = self.args.state_dim
+        self.state_dim = args.state_dim
+        self.action_dim = args.action_dim
         self.max_action = args.max_action
-        self.min_log_std = min_log_std
-        self.max_log_std = max_log_std
-        self.net = Mlp(self.state_dim, [256, 256], 2 * self.action_dim)
-        self.net.to(self.args.device)
 
-    def forward(self, obs):
-        mean, log_std = self.net(obs).split([self.action_dim, self.action_dim], dim=1)
-        log_std = log_std.clamp(self.min_log_std, self.max_log_std)
+        l1 = args.ls; l2 = args.ls; l3 = l2
+        self.l1 = nn.Linear(self.state_dim, l1)
+        self.l2 = nn.Linear(l1, l2)
+        self.l3 = nn.Linear(l3, self.action_dim)	
 
-        if self.training:
-            std = torch.exp(log_std)
-            tanh_normal = TanhNormal(mean, std, self.args.device)
-            action, pre_tanh = tanh_normal.rsample()
-            log_prob = tanh_normal.log_prob(pre_tanh)
-            log_prob = log_prob.sum(dim=1, keepdim=True)
-        else:  # deterministic eval without log_prob computation
-            action = torch.tanh(mean)
-            log_prob = None
-        return action, log_prob
+    def forward(self, state):
+        a = F.relu(self.l1(state))
+        a = F.relu(self.l2(a))
+        return self.max_action * torch.tanh(self.l3(a))
 
     def select_action(self, obs):
-        obs = torch.FloatTensor(obs).to(self.args.device)[None, :]
-        action, _ = self.forward(obs)
-        action = action[0].cpu().detach().numpy()
-        return action
-
-    def evaluate(self, state):
-        batch_mu, batch_log_sigma = self.forward(state)
-        batch_sigma = torch.exp(batch_log_sigma)
-        dist = Normal(batch_mu, batch_sigma)
-        noise = Normal(torch.tensor([0.] * self.args.action_dim), 1)    #actor dim=4
-
-        z = noise.sample()
-        action = torch.tanh(batch_mu + batch_sigma*z.to(self.args.device))
-        log_prob = (dist.log_prob(batch_mu + batch_sigma * z.to(self.args.device)) -\
-                   torch.log((1 - action.pow(2)) * self.max_action + 1e-7)).sum(-1).unsqueeze(dim=-1)
-        return action * self.max_action, log_prob, z, batch_mu, batch_log_sigma
+        return self.forward(obs)
 
     def get_novelty(self, batch):
         state_batch, action_batch, _, _, _ = batch
@@ -197,48 +174,29 @@ class Actor(nn.Module):
             count += param.numel()
         return count
 
-class Mlp(nn.Module):
-    def __init__(
-            self,
-            input_size,
-            hidden_sizes,
-            output_size
-    ):
-        super().__init__()
-        # TODO: initialization
-        self.fcs = []
-        in_size = input_size
-        for i, next_size in enumerate(hidden_sizes):
-            fc = Linear(in_size, next_size)
-            self.add_module(f'fc{i}', fc)
-            self.fcs.append(fc)
-            in_size = next_size
-        self.last_fc = Linear(in_size, output_size)
 
-    def forward(self, input):
-        h = input
-        for fc in self.fcs:
-            h = relu(fc(h))
-        output = self.last_fc(h)
-        return output
 
 class Critic(nn.Module):
-    def __init__(self, args, n_nets=5, n_quantiles=25, top_quantiles_to_drop_per_net=2):
-        super().__init__()
-        self.nets = []
-        self.n_nets = n_nets
-        self.n_quantiles = n_quantiles
-        self.top_quantiles_to_drop_per_net = top_quantiles_to_drop_per_net
-        for i in range(n_nets):
-            net = Mlp(args.state_dim + args.action_dim, [512, 512, 512], 1)
-            net.to(args.device)
-            self.add_module(f'qf{i}', net)
-            self.nets.append(net)
+	def __init__(self, state_dim, action_dim, hidden_sizes=[400, 300]):
+		super(Critic, self).__init__()
 
-    def forward(self, state, action, different=False):
-        sa = torch.cat((state, action), dim=-1)
-        quantiles = torch.stack(tuple(net(sa) for net in self.nets), dim=1)
-        return quantiles
+		self.l1 = nn.Linear(state_dim + action_dim, hidden_sizes[0])
+		self.l2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
+		self.l3 = nn.Linear(hidden_sizes[1], 1)
+
+
+	def forward(self, state, action):
+		if len(state.shape) == 3:
+			sa = torch.cat([state, action], 2)
+		else:
+			sa = torch.cat([state, action], 1)
+
+		q = F.relu(self.l1(sa))
+		q = F.relu(self.l2(q))
+		q = self.l3(q)
+
+		return q
+
 
 def caculate_prob(score):
 
@@ -262,19 +220,29 @@ def quantile_huber_loss_f(quantiles, samples, device):
     loss = (torch.abs(tau[None, None, :, None] - (pairwise_delta < 0).float()) * huber_loss).mean()
     return loss
 
-class TQC(object):
+class DARC(object):
     def __init__(self, args):
         self.args = args
         self.max_action = 1.0
         self.device = args.device
-        self.actor = Actor(args).to(self.device)
         
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=6e-4)
+        self.actor1 = Actor(args).to(self.device)
+        self.actor1_target = Actor(args).to(self.device)
+        self.actor1_optimizer = torch.optim.Adam(self.actor.parameters(), lr=6e-4)
 
-        self.critic = Critic(args, n_nets=args.n_nets).to(self.device)
-        self.critic_target = Critic(args, n_nets=args.n_nets).to(self.device)
-        self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr=6e-4)
+        self.actor2 = Actor(args).to(self.device)
+        self.actor2_target = Actor(args).to(self.device)
+        self.actor2_optimizer = torch.optim.Adam(self.actor.parameters(), lr=6e-4)
+
+        self.critic1 = Critic(args).to(self.device)
+        self.critic1_target = Critic(args).to(self.device)
+        self.critic1_target.load_state_dict(self.critic.state_dict())
+        self.critic2_optimizer = torch.optim.Adam(self.critic.parameters(),lr=6e-4)
+
+        self.critic2 = Critic(args).to(self.device)
+        self.critic2_target = Critic(args).to(self.device)
+        self.critic2_target.load_state_dict(self.critic.state_dict())
+        self.critic2_optimizer = torch.optim.Adam(self.critic.parameters(),lr=6e-4)
 
         self.log_alpha = torch.zeros((1,), requires_grad=True, device=self.device)
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=3e-4)
@@ -312,47 +280,74 @@ class TQC(object):
             reward = torch.FloatTensor(r).to(self.device)
 
             with torch.no_grad():
-                sample_next_action, next_log_prob, z, batch_mu, batch_log_sigma = self.actor.evaluate(next_state)
+                next_action1 = self.actor1_target(next_state)
+                next_action2 = self.actor2_target(next_state)
 
-                # compute and cut quantiles at the next action
-                next_quantiles = self.critic_target(next_state, sample_next_action)
-                sorted_next_quantiles, _ = torch.sort(next_quantiles.reshape(batch_size, -1))
-                sorted_next_quantiles_part = sorted_next_quantiles[:, :self.quantiles_total - self.top_quantiles_to_drop]
+                noise = torch.randn((action.shape[0], action.shape[1]), dtype=action.dtype, layout=action.layout, device=action.device) * self.policy_noise
+                noise = noise.clamp(-self.noise_clip, self.noise_clip)
 
-                # compute target
-                target_Q = reward + (done * discount * (sorted_next_quantiles_part - self.alpha * next_log_prob))
+                next_action1 = (next_action1 + noise).clamp(-self.max_action, self.max_action)
+                next_action2 = (next_action2 + noise).clamp(-self.max_action, self.max_action)
 
-            cur_Q = self.critic(state, action)
-            critic_loss = quantile_huber_loss_f(cur_Q, target_Q, self.device)
-            
-            # --- Update ---
-            self.critic_optimizer.zero_grad()
-            critic_loss.backward()
-            self.critic_optimizer.step()
+                next_Q1_a1 = self.critic1_target(next_state, next_action1)
+                next_Q2_a1 = self.critic2_target(next_state, next_action1)
 
-            # Delayed policy updates
-            # if it % policy_freq == 0:
-                 # --- Policy and alpha loss ---
-            new_action, log_pi = self.actor(state)
-            alpha_loss = -self.log_alpha * (log_pi + self.target_entropy).detach().mean()
-            actor_loss = (self.args.alpha * log_pi - self.critic(state, new_action).mean(2).mean(1, keepdim=True)).mean()
+                next_Q1_a2 = self.critic1_target(next_state, next_action2)
+                next_Q2_a2 = self.critic2_target(next_state, next_action2)
 
-            self.actor_optimizer.zero_grad()
-            actor_loss.backward()
-            self.actor_optimizer.step()
+                next_Q1 = torch.min(next_Q1_a1, next_Q2_a1)
+                next_Q2 = torch.min(next_Q1_a2, next_Q2_a2)
 
-            self.alpha_optimizer.zero_grad()
-            alpha_loss.backward()
-            self.alpha_optimizer.step()
+                next_Q = 0.1 * next_Q1 + 0.9 * next_Q2
 
-            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+                target_Q = reward + (done * discount * next_Q)
+
+            epsilon = np.random.rand(0, 1)
+            if epsilon < 0.5:
+                current_Q1 = self.critic1(state, action)
+                current_Q2 = self.critic2(state, action)
+
+                critic_loss1 = F.mse_loss(current_Q1, target_Q) + 0.1 * F.mse_loss(current_Q2, target_Q)
+
+                self.critic1_optimizer.zero_grad()
+                critic_loss1.backward()
+                self.critic1_optimizer.step()
+
+                actor1_loss = -self.critic1(state, self.actor1(state)).mean()
+                
+                self.actor1_optimizer.zero_grad()
+                actor1_loss.backward()
+                self.actor1_optimizer.step()
+                actor_loss_list.append(actor1_loss.item())
+                
+            for param, target_param in zip(self.critic1.parameters(), self.critic1_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-            # for param, target_param in zip(self.PVN.parameters(), self.PVN_Target.parameters()):
-            #     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+            for param, target_param in zip(self.actor1.parameters(), self.actor1_target.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-            actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
-            pre_loss_list.append(0.0)
+            else:
+                current_Q1 = self.critic1(state, action)
+                current_Q2 = self.critic2(state, action)
+
+                critic_loss2 = F.mse_loss(current_Q2, target_Q) + 0.1 * F.mse_loss(current_Q2, target_Q)
+
+                self.critic2_optimizer.zero_grad()
+                critic_loss2.backward()
+                self.critic2_optimizer.step()
+
+                actor2_loss = -self.critic2(state, self.actor2(state)).mean()
+                
+                self.actor2_optimizer.zero_grad()
+                actor2_loss.backward()
+                self.actor2_optimizer.step()
+                actor_loss_list.append(actor2_loss.item())
+                
+            for param, target_param in zip(self.critic2.parameters(), self.critic2_target.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
+            for param, target_param in zip(self.actor2.parameters(), self.actor2_target.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
         return np.mean(actor_loss_list) , np.mean(critic_loss_list), np.mean(pre_loss_list),np.mean(pv_loss_list), np.mean(keep_c_loss)
 
