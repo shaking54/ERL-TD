@@ -120,8 +120,13 @@ class Actor(nn.Module):
         return self.max_action * torch.tanh(self.l3(a))
 
     def select_action(self, obs):
-        return self.forward(obs)
+        obs = torch.FloatTensor(obs).to(self.args.device).unsqueeze(0)
+        return self.forward(obs).detach().cpu().numpy()
 
+    def evaluate(self, obs):
+        obs = torch.FloatTensor(obs).to(self.args.device)
+        return self.forward(obs), None, None, None, None
+        
     def get_novelty(self, batch):
         state_batch, action_batch, _, _, _ = batch
         novelty = torch.mean(torch.sum((action_batch - self.forward(state_batch))**2, dim=-1))
@@ -177,48 +182,26 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-	def __init__(self, state_dim, action_dim, hidden_sizes=[400, 300]):
-		super(Critic, self).__init__()
+    def __init__(self, args):
+        super().__init__()
 
-		self.l1 = nn.Linear(state_dim + action_dim, hidden_sizes[0])
-		self.l2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
-		self.l3 = nn.Linear(hidden_sizes[1], 1)
+        self.args = args
+        self.state_dim = args.state_dim
+        self.action_dim = args.action_dim
+        self.max_action = args.max_action
 
+        l1 = args.ls; l2 = args.ls; l3 = l2
+        self.l1 = nn.Linear(self.state_dim + self.action_dim, l1)
+        self.l2 = nn.Linear(l1, l2)
+        self.l3 = nn.Linear(l3, 1)
 
-	def forward(self, state, action):
-		if len(state.shape) == 3:
-			sa = torch.cat([state, action], 2)
-		else:
-			sa = torch.cat([state, action], 1)
+    def forward(self, state, action):
+        sa = torch.cat([state, action], 1)
+        q = F.relu(self.l1(sa))
+        q = F.relu(self.l2(q))
+        q = self.l3(q)
 
-		q = F.relu(self.l1(sa))
-		q = F.relu(self.l2(q))
-		q = self.l3(q)
-
-		return q
-
-
-def caculate_prob(score):
-
-    X = (score - np.min(score))/(np.max(score)-np.min(score) + 1e-8)
-    max_X = np.max(X)
-
-    exp_x = np.exp(X-max_X)
-    sum_exp_x = np.sum(exp_x)
-    prob = exp_x/sum_exp_x
-    return prob
-
-def quantile_huber_loss_f(quantiles, samples, device):
-    pairwise_delta = samples[:, None, None, :] - quantiles[:, :, :, None]  # batch x nets x quantiles x samples
-    abs_pairwise_delta = torch.abs(pairwise_delta)
-    huber_loss = torch.where(abs_pairwise_delta > 1,
-                             abs_pairwise_delta - 0.5,
-                             pairwise_delta ** 2 * 0.5)
-
-    n_quantiles = quantiles.shape[2]
-    tau = torch.arange(n_quantiles, device=device).float() / n_quantiles + 1 / 2 / n_quantiles
-    loss = (torch.abs(tau[None, None, :, None] - (pairwise_delta < 0).float()) * huber_loss).mean()
-    return loss
+        return q
 
 class DARC(object):
     def __init__(self, args):
@@ -226,23 +209,23 @@ class DARC(object):
         self.max_action = 1.0
         self.device = args.device
         
-        self.actor1 = Actor(args).to(self.device)
-        self.actor1_target = Actor(args).to(self.device)
-        self.actor1_optimizer = torch.optim.Adam(self.actor.parameters(), lr=6e-4)
+        self.actor = Actor(args).to(self.device)
+        self.actor_target = Actor(args).to(self.device)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=6e-4)
 
         self.actor2 = Actor(args).to(self.device)
         self.actor2_target = Actor(args).to(self.device)
         self.actor2_optimizer = torch.optim.Adam(self.actor.parameters(), lr=6e-4)
 
-        self.critic1 = Critic(args).to(self.device)
-        self.critic1_target = Critic(args).to(self.device)
-        self.critic1_target.load_state_dict(self.critic.state_dict())
-        self.critic2_optimizer = torch.optim.Adam(self.critic.parameters(),lr=6e-4)
+        self.critic = Critic(args).to(self.device)
+        self.critic_target = Critic(args).to(self.device)
+        self.critic_target.load_state_dict(self.critic.state_dict())
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr=6e-4)
 
         self.critic2 = Critic(args).to(self.device)
         self.critic2_target = Critic(args).to(self.device)
-        self.critic2_target.load_state_dict(self.critic.state_dict())
-        self.critic2_optimizer = torch.optim.Adam(self.critic.parameters(),lr=6e-4)
+        self.critic2_target.load_state_dict(self.critic2.state_dict())
+        self.critic2_optimizer = torch.optim.Adam(self.critic2.parameters(),lr=6e-4)
 
         self.log_alpha = torch.zeros((1,), requires_grad=True, device=self.device)
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=3e-4)
@@ -252,9 +235,6 @@ class DARC(object):
         
         self.discount = args.gamma
         self.tau = args.tau
-
-        self.quantiles_total = self.critic.n_quantiles * self.critic.n_nets
-        self.top_quantiles_to_drop = self.critic.top_quantiles_to_drop_per_net * self.critic.n_nets
         
         self.buffer = replay_memory.ReplayMemory(args.individual_bs, args.device)
 
@@ -280,19 +260,19 @@ class DARC(object):
             reward = torch.FloatTensor(r).to(self.device)
 
             with torch.no_grad():
-                next_action1 = self.actor1_target(next_state)
+                next_action1 = self.actor_target(next_state)
                 next_action2 = self.actor2_target(next_state)
 
-                noise = torch.randn((action.shape[0], action.shape[1]), dtype=action.dtype, layout=action.layout, device=action.device) * self.policy_noise
-                noise = noise.clamp(-self.noise_clip, self.noise_clip)
+                noise = torch.randn((action.shape[0], action.shape[1]), dtype=action.dtype, layout=action.layout, device=action.device) * noise_clip
+                noise = noise.clamp(-noise_clip, noise_clip)
 
                 next_action1 = (next_action1 + noise).clamp(-self.max_action, self.max_action)
                 next_action2 = (next_action2 + noise).clamp(-self.max_action, self.max_action)
 
-                next_Q1_a1 = self.critic1_target(next_state, next_action1)
+                next_Q1_a1 = self.critic_target(next_state, next_action1)
                 next_Q2_a1 = self.critic2_target(next_state, next_action1)
 
-                next_Q1_a2 = self.critic1_target(next_state, next_action2)
+                next_Q1_a2 = self.critic_target(next_state, next_action2)
                 next_Q2_a2 = self.critic2_target(next_state, next_action2)
 
                 next_Q1 = torch.min(next_Q1_a1, next_Q2_a1)
@@ -304,30 +284,30 @@ class DARC(object):
 
             epsilon = np.random.rand(0, 1)
             if epsilon < 0.5:
-                current_Q1 = self.critic1(state, action)
+                current_Q1 = self.critic(state, action)
                 current_Q2 = self.critic2(state, action)
 
                 critic_loss1 = F.mse_loss(current_Q1, target_Q) + 0.1 * F.mse_loss(current_Q2, target_Q)
 
-                self.critic1_optimizer.zero_grad()
+                self.critic_optimizer.zero_grad()
                 critic_loss1.backward()
-                self.critic1_optimizer.step()
+                self.critic_optimizer.step()
 
-                actor1_loss = -self.critic1(state, self.actor1(state)).mean()
+                actor_loss = -self.critic(state, self.actor(state)).mean()
                 
-                self.actor1_optimizer.zero_grad()
-                actor1_loss.backward()
-                self.actor1_optimizer.step()
-                actor_loss_list.append(actor1_loss.item())
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                self.actor_optimizer.step()
+                actor_loss_list.append(actor_loss.item())
                 
-            for param, target_param in zip(self.critic1.parameters(), self.critic1_target.parameters()):
+            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-            for param, target_param in zip(self.actor1.parameters(), self.actor1_target.parameters()):
+            for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
             else:
-                current_Q1 = self.critic1(state, action)
+                current_Q1 = self.critic(state, action)
                 current_Q2 = self.critic2(state, action)
 
                 critic_loss2 = F.mse_loss(current_Q2, target_Q) + 0.1 * F.mse_loss(current_Q2, target_Q)

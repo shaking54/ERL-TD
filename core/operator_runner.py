@@ -2,10 +2,10 @@ import os
 import pickle
 import numpy as np
 import torch
-from core import sac, ddpg
+from core import darc
 from core import mod_neuro_evo
 
-policy_gradient = sac
+policy_gradient = darc
 
 class OperatorRunner:
     def __init__(self, args, env):

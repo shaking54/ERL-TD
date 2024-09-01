@@ -2,7 +2,7 @@ import random
 import time
 
 import numpy as np
-from core.sac import GeneticAgent, hard_update
+from core.darc import GeneticAgent, hard_update
 from typing import List
 from core import replay_memory
 import fastrand, math
@@ -545,7 +545,7 @@ class SSNE:
                 state = torch.FloatTensor(x).to(self.args.device)
                 actor_target, next_log_prob, z, batch_mu, batch_log_sigma = agent.actor.evaluate(state)
                 actor, next_log_prob, z, batch_mu, batch_log_sigma  = pop.actor.evaluate(state)
-                pop_actor_loss = ((actor - actor_target.detach()) **2 * 0.5).mean()
+                pop_actor_loss = ((actor - actor_target) **2 * 0.5).mean()
                 pop.actor_optim.zero_grad()
                 pop_actor_loss.backward()
             if grad_step:

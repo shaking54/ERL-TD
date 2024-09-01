@@ -2,7 +2,7 @@ import numpy as np
 from core import mod_neuro_evo as utils_ne
 from core import mod_utils as utils
 from core import replay_memory
-from core import tqc
+from core import darc
 from scipy.spatial import distance
 from core import replay_memory
 from parameters import Parameters
@@ -27,13 +27,13 @@ class Agent:
         self.buffers = []
         self.all_actors = []
         for _ in range(args.pop_size):
-            #self.pop.append(tqc.GeneticAgent(args))
-            genetic = tqc.GeneticAgent(args)
+            #self.pop.append(darc.GeneticAgent(args))
+            genetic = darc.GeneticAgent(args)
             self.pop.append(genetic)
             self.all_actors.append(genetic.actor)
 
         # Init RL Agent
-        self.rl_agent = tqc.TQC(args)
+        self.rl_agent = darc.DARC(args)
         self.replay_buffer = utils.ReplayBuffer(max_size = self.args.buffer_size)
         self.all_actors.append(self.rl_agent.actor)
         self.evolver = utils_ne.SSNE(self.args, self.rl_agent.critic, self.evaluate, self.args.prob_reset_and_sup, self.args.frac)
@@ -54,7 +54,7 @@ class Agent:
         self.evo_times = 0
 
 
-    def evaluate(self, agent: tqc.GeneticAgent or tqc.TQC, is_render=False, is_action_noise=False, # type: ignore
+    def evaluate(self, agent: darc.GeneticAgent or darc.DARC, is_render=False, is_action_noise=False, # type: ignore
                  store_transition=True, net_index=None, is_random =False, rl_agent_collect_data = False,  use_n_step_return = False,PeVFA=None):
         total_reward = 0.0
         total_error = 0.0
@@ -80,7 +80,7 @@ class Agent:
         while not done:
             if store_transition:
                 self.num_frames += 1
-                if not isinstance(agent, tqc.TQC):
+                if not isinstance(agent, darc.DARC):
                     self.gen_frames += 1
                 if self.num_frames % 2000 == 0:
                     eval_res = self.evaluate(self.rl_agent, store_transition=False,
@@ -125,7 +125,7 @@ class Agent:
                 #self.replay_buffer.add(*transition)
                 agent.buffer.add(*transition)
                 next_action_list.append(next_action)
-            if isinstance(agent, tqc.TQC) and store_transition  and self.rl_agent_frames>=self.args.init_steps:
+            if isinstance(agent, darc.DARC) and store_transition  and self.rl_agent_frames>=self.args.init_steps:
                 self.rl_agent.train(None, None, self.pop, None, None,
                                     None, None, self.replay_buffer,
                                     1, 256,
@@ -138,7 +138,7 @@ class Agent:
             state_tensor = torch.FloatTensor(np.array(state_list)).to(self.args.device)
             action_tensor = torch.FloatTensor(np.array(action_list)).to(self.args.device)
             next_Q = PeVFA.forward(state_tensor, action_tensor)
-            _, mean_next_Q = torch.std_mean(next_Q, 1)
+            mean_next_Q = torch.mean(next_Q, 1)
             Q_espisde_mean = (mean_next_Q).mean().cpu().data.numpy().flatten()
         if store_transition: self.num_games += 1
 
@@ -146,7 +146,7 @@ class Agent:
                 "reward_list":reward_list, "policy_prams_list":policy_params_list, "action_list":action_list, "next_state_list":next_state_list, "next_action_list":next_action_list}
 
 
-    def rl_to_evo(self, rl_agent: tqc.TQC, evo_net: tqc.GeneticAgent):
+    def rl_to_evo(self, rl_agent: darc.DARC, evo_net: darc.GeneticAgent):
         for target_param, param in zip(evo_net.actor.parameters(), rl_agent.actor.parameters()):
             target_param.data.copy_(param.data)
         evo_net.buffer.reset()
@@ -167,14 +167,14 @@ class Agent:
                 novelties[i] += (net.get_novelty(batch))
         return novelties / epochs
 
-    def train_tqc(self, evo_times,all_fitness, state_list_list,reward_list_list, policy_params_list_list,action_list_list):
+    def train_darc(self, evo_times,all_fitness, state_list_list,reward_list_list, policy_params_list_list,action_list_list):
         bcs_loss, pgs_loss,c_q,t_q = [], [],[],[]
         if len(self.replay_buffer.storage) >= 5000:#self.args.batch_size * 5:
             before_rewards = np.zeros(len(self.pop))
 
             # sac.hard_update(self.rl_agent.old_state_embedding, self.rl_agent.state_embedding)
             for gen in self.pop:
-                tqc.hard_update(gen.old_actor, gen.actor)
+                darc.hard_update(gen.old_actor, gen.actor)
 
             discount_reward_list_list =[]
             for reward_list in reward_list_list:
@@ -229,29 +229,10 @@ class Agent:
                 all_fitness = real_rewards
             else:
                 for i, net in enumerate(self.pop):
-                    episode = self.evaluate(net, is_render=False, is_action_noise=False,net_index=i,use_n_step_return = True,PeVFA=self.rl_agent.critic1)
+                    episode = self.evaluate(net, is_render=False, is_action_noise=False,net_index=i,use_n_step_return = True,PeVFA=self.rl_agent.critic)
                     fake_rewards[i] = fake_rewards[i] + episode['n_step_discount_reward'] + episode['reward']
                     MC_n_steps_rewards[i]  +=episode['reward']
                 all_fitness = fake_rewards
-            # gae = 0
-            # Gt = []
-            # for i, net in enumerate(self.pop):
-            #    episode = self.evaluate(net, is_render=False, is_action_noise=False, net_index=i)
-            #    s = torch.FloatTensor(episode['state_list']).to(self.args.device)
-            #    a = torch.FloatTensor(episode['action_list']).to(self.args.device)
-            #    s_ = torch.FloatTensor(episode['next_state_list']).to(self.args.device)
-            #    a_ = torch.FloatTensor(episode['next_action_list']).to(self.args.device)
-            #    dw = torch.FloatTensor(episode['dw']).to(self.args.device)
-            #    dones = torch.FloatTensor(episode['dones']).to(self.args.device)
-            #    r = torch.FloatTensor(episode['reward_list']).to(self.args.device)
-            #    vs = self.rl_agent.critic.forward(s, a)
-            #    vs_ = self.rl_agent.critic.forward(s_, a_)
-            #    deltas = r + self.args.gamma * (1.0 - dw) * vs_ - vs
-            #    for delta, d_i in zip(reversed(deltas.flatten().detach().cpu().numpy()), reversed(dones.flatten().detach().cpu().numpy())):
-            #        gae = delta + self.args.gamma * 0.5 * gae * (1.0 - d_i)
-            #        Gt.insert(0, gae)
-            #    real_rewards[i] = sum(Gt)
-            # all_fitness = real_rewards
         else :
             all_fitness = np.zeros(len(self.pop))
 
@@ -285,7 +266,7 @@ class Agent:
             action_list_list.append(episode['action_list'])
 
             if self.rl_agent_frames>=self.args.init_steps:
-                losses, _, add_rewards = self.train_tqc(self.evo_times,all_fitness, state_list_list,reward_list_list,policy_parms_list_list,action_list_list)
+                losses, _, add_rewards = self.train_darc(self.evo_times,all_fitness, state_list_list,reward_list_list,policy_parms_list_list,action_list_list)
             else :
                 losses = {'bcs_loss': 0.0, 'pgs_loss': 0.0 ,"current_q":0.0, "target_q":0.0, "pv_loss":0.0, "pre_loss":0.0}
                 add_rewards = np.zeros(len(self.pop)) 
@@ -337,19 +318,6 @@ class Agent:
             'l1_before_after':L1_before_after,
             'keep_c_loss':np.mean(keep_c_loss)
         }
-
-    # def distill(self, pop, agent, tuple_elite_index, N=10):
-    #     for _ in range(N):
-    #         x, y, u, r, d, _, _ = self.replay_buffer.sample(self.args.batch_size)
-    #         state = torch.FloatTensor(x).to(self.args.device)
-    #         for i, p in enumerate(pop):
-    #             if i not in tuple_elite_index:
-    #                 q = agent.critic.forward(state, p.actor.forward(state))
-    #                 std_q, mean_q = torch.std_mean(q, dim=-2)
-    #                 pop_actor_loss = (-mean_q - 0.5 *std_q).mean()
-    #                 p.actor_optim.zero_grad()
-    #                 pop_actor_loss.backward()
-    #                 p.actor_optim.step()
 
 class Archive:
     """A record of past behaviour characterisations (BC) in the population"""
