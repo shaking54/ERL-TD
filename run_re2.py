@@ -6,6 +6,7 @@ import gym, torch
 import argparse
 import pickle
 from core.operator_runner import OperatorRunner
+from core.utils import RescaleAction
 from parameters import Parameters
 
 import logging
@@ -89,6 +90,8 @@ parameters = Parameters(parser)  # Inject the cla arguments in the parameters ob
 # Create Env
 #env = utils.NormalizedActions(gym.make(parameters.env_name))
 env = gym.make(parameters.env_name)
+env = RescaleAction(env, -1.0, 1.0) 
+
 print("env.action_space.low",env.action_space.low, "env.action_space.high",env.action_space.high)
 parameters.action_dim = env.action_space.shape[0]
 parameters.state_dim = env.observation_space.shape[0]

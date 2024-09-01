@@ -97,7 +97,7 @@ class Agent:
             if is_random:
                 action = self.env.action_space.sample()
             else:
-                
+                    
                 action = agent.actor.select_action(np.array(state))
             all_state.append(np.array(state))
             all_action.append(np.array(action))
