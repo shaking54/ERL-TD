@@ -196,7 +196,9 @@ class Critic(nn.Module):
         self.l3 = nn.Linear(l3, 1)
 
     def forward(self, state, action):
-        sa = torch.cat([state, action], 1)
+        if len(action.shape) == 3:
+            state = state.unsqueeze(1)
+        sa = torch.cat([state, action], -1)
         q = F.relu(self.l1(sa))
         q = F.relu(self.l2(q))
         q = self.l3(q)
@@ -254,7 +256,11 @@ class DARC(object):
                 
             x, y, u, r, d, _ ,_= replay_buffer.sample(batch_size)
             state = torch.FloatTensor(x).to(self.device)
-            action = torch.FloatTensor(u).to(self.device)
+            try:
+                action = torch.FloatTensor(u).to(self.device)
+            except:
+                u = np.vstack(u).astype(np.float)
+                action = torch.FloatTensor(u).to(self.device)
             next_state = torch.FloatTensor(y).to(self.device)
             done = torch.FloatTensor(1 - d).to(self.device)
             reward = torch.FloatTensor(r).to(self.device)
