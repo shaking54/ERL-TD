@@ -5,7 +5,7 @@ import wandb
 os.environ["WANDB_API_KEY"] = "bd4f9ed4f0e350a34c7ef0ea98f697dd7cb718fe"
 # os.environ["WANDB_MODE"] = "offline"
 
-wandb.init(project="Erl-re2",name="TQC")
+wandb.init(project="Erl-re2",name="DARC")
 
 class Parameters:
     def __init__(self, cla, init=True):
@@ -30,7 +30,7 @@ class Parameters:
         self.mutate_mode = cla.mutate_mode #  distill_mutate gauss_mutate
         # Synchronization
         if cla.env == 'HalfCheetah-v2' or cla.env == 'Hopper-v2' or cla.env == 'Ant-v2' or cla.env == 'Walker2d-v2' or cla.env == "Humanoid-v2":
-            self.rl_to_ea_synch_period = 10
+            self.rl_to_ea_synch_period = 1
         else:
             self.rl_to_ea_synch_period = 10
         

@@ -38,6 +38,9 @@ class GeneticAgent:
         self.buffer = replay_memory.ReplayMemory(self.args.individual_bs, args.device)
         self.loss = nn.MSELoss()
 
+    def select_action(self, state):
+        return self.actor.select_action(state)
+
     def keep_consistency(self, z_old, z_new):
         target_action = self.old_actor.select_action_from_z(z_old).detach()
         current_action = self.actor.select_action_from_z(z_new)
@@ -114,6 +117,8 @@ class Actor(nn.Module):
         self.l2 = nn.Linear(l1, l2)
         self.l3 = nn.Linear(l3, self.action_dim)	
 
+        self.to(args.device)
+
     def forward(self, state):
         a = F.relu(self.l1(state))
         a = F.relu(self.l2(a))
@@ -124,7 +129,7 @@ class Actor(nn.Module):
         return self.forward(obs).detach().cpu().numpy()
 
     def evaluate(self, obs):
-        obs = torch.FloatTensor(obs).to(self.args.device)
+        # obs = torch.FloatTensor(obs).to(self.args.device)
         return self.forward(obs), None, None, None, None
         
     def get_novelty(self, batch):
@@ -211,6 +216,8 @@ class DARC(object):
         self.max_action = 1.0
         self.device = args.device
         
+        self.weight_regularizer = 1e-5
+
         self.actor = Actor(args).to(self.device)
         self.actor_target = Actor(args).to(self.device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=6e-4)
@@ -244,8 +251,21 @@ class DARC(object):
     def alpha(self):
         return self.log_alpha.exp()
 
-    def train(self,evo_times,all_fitness, all_gen , on_policy_states, on_policy_params, on_policy_discount_rewards,on_policy_actions,replay_buffer, iterations, batch_size=64, discount=0.99, tau=0.005, policy_noise=0.2,
-              noise_clip=0.5, policy_freq=2, train_OFN_use_multi_actor= False, pop = None):
+    def select_action(self, state):
+        state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
+
+        action1 = self.actor(state)
+        action2 = self.actor2(state)
+
+        q1 = self.critic(state, action1)
+        q2 = self.critic2(state, action2)
+
+        action = action1 if q1 >= q2 else action2
+
+        return action.cpu().data.numpy().flatten()
+
+    def train_(self, update_a1, evo_times,all_fitness, all_gen , on_policy_states, on_policy_params, on_policy_discount_rewards,on_policy_actions,replay_buffer, iterations, batch_size=64, discount=0.99, tau=0.005, policy_noise=0.2, noise_clip=0.5, policy_freq=2, train_OFN_use_multi_actor= False, pop = None):
+
         actor_loss_list =[]
         critic_loss_list =[]
         pre_loss_list = []
@@ -255,12 +275,9 @@ class DARC(object):
         for it in range(iterations):
                 
             x, y, u, r, d, _ ,_= replay_buffer.sample(batch_size)
+            
             state = torch.FloatTensor(x).to(self.device)
-            try:
-                action = torch.FloatTensor(u).to(self.device)
-            except:
-                u = np.vstack(u).astype(np.float)
-                action = torch.FloatTensor(u).to(self.device)
+            action = torch.FloatTensor(np.vstack(u).astype(float)).to(self.device)
             next_state = torch.FloatTensor(y).to(self.device)
             done = torch.FloatTensor(1 - d).to(self.device)
             reward = torch.FloatTensor(r).to(self.device)
@@ -288,12 +305,11 @@ class DARC(object):
 
                 target_Q = reward + (done * discount * next_Q)
 
-            epsilon = np.random.rand(0, 1)
-            if epsilon < 0.5:
+            if update_a1:
                 current_Q1 = self.critic(state, action)
                 current_Q2 = self.critic2(state, action)
 
-                critic_loss1 = F.mse_loss(current_Q1, target_Q) + 0.1 * F.mse_loss(current_Q2, target_Q)
+                critic_loss1 = F.mse_loss(current_Q1, target_Q) + self.weight_regularizer * F.mse_loss(current_Q1, current_Q2)
 
                 self.critic_optimizer.zero_grad()
                 critic_loss1.backward()
@@ -306,17 +322,17 @@ class DARC(object):
                 self.actor_optimizer.step()
                 actor_loss_list.append(actor_loss.item())
                 
-            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-            for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
             else:
                 current_Q1 = self.critic(state, action)
                 current_Q2 = self.critic2(state, action)
 
-                critic_loss2 = F.mse_loss(current_Q2, target_Q) + 0.1 * F.mse_loss(current_Q2, target_Q)
+                critic_loss2 = F.mse_loss(current_Q2, target_Q) + self.weight_regularizer * F.mse_loss(current_Q1, current_Q2)
 
                 self.critic2_optimizer.zero_grad()
                 critic_loss2.backward()
@@ -329,15 +345,23 @@ class DARC(object):
                 self.actor2_optimizer.step()
                 actor_loss_list.append(actor2_loss.item())
                 
-            for param, target_param in zip(self.critic2.parameters(), self.critic2_target.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                for param, target_param in zip(self.critic2.parameters(), self.critic2_target.parameters()):
+                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-            for param, target_param in zip(self.actor2.parameters(), self.actor2_target.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                for param, target_param in zip(self.actor2.parameters(), self.actor2_target.parameters()):
+                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
         return np.mean(actor_loss_list) , np.mean(critic_loss_list), np.mean(pre_loss_list),np.mean(pv_loss_list), np.mean(keep_c_loss)
 
-
+    def train(self,evo_times,all_fitness, all_gen , on_policy_states, on_policy_params, on_policy_discount_rewards,on_policy_actions,replay_buffer, iterations, batch_size=64, discount=0.99, tau=0.005, policy_noise=0.2, noise_clip=0.5, policy_freq=2, train_OFN_use_multi_actor= False, pop = None):
+        
+        actor_loss_list1, critic_loss_list1, pre_loss_list1, pv_loss_list1, keep_c_loss1 = self.train_(True, evo_times,all_fitness, all_gen , on_policy_states, on_policy_params, on_policy_discount_rewards,on_policy_actions,replay_buffer, iterations, batch_size, discount, tau, policy_noise, noise_clip, policy_freq, train_OFN_use_multi_actor, pop)        
+        
+        actor_loss_list2 , critic_loss_list2, pre_loss_list2, pv_loss_list2, keep_c_loss2 = self.train_(False, evo_times,all_fitness, all_gen , on_policy_states, on_policy_params, on_policy_discount_rewards,on_policy_actions,replay_buffer, iterations, batch_size, discount, tau, policy_noise, noise_clip, policy_freq, train_OFN_use_multi_actor, pop)
+        
+        actor_loss_list , critic_loss_list, pre_loss_list, pv_loss_list, keep_c_loss = actor_loss_list1 + actor_loss_list2, critic_loss_list1 + critic_loss_list2, pre_loss_list1 + pre_loss_list2, pv_loss_list1 + pv_loss_list2, keep_c_loss1 + keep_c_loss2
+        
+        return np.mean(actor_loss_list) , np.mean(critic_loss_list), np.mean(pre_loss_list),np.mean(pv_loss_list), np.mean(keep_c_loss)
 
 def fanin_init(size, fanin=None):
     v = 0.008

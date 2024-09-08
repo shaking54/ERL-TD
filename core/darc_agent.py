@@ -98,7 +98,7 @@ class Agent:
                 action = self.env.action_space.sample()
             else:
                 
-                action = agent.actor.select_action(np.array(state))
+                action = agent.select_action(np.array(state))
             all_state.append(np.array(state))
             all_action.append(np.array(action))
             # Simulate one step in environment
@@ -120,7 +120,7 @@ class Agent:
 
             transition = (state, action, next_state, reward, done_bool)
             if store_transition:
-                next_action = agent.actor.select_action(np.array(next_state))
+                next_action = agent.select_action(np.array(next_state))
                 self.replay_buffer.add((state, next_state, action, reward, done_bool, next_action ,policy_params, np.zeros(self.args.histroy_std_num + 1)))
                 #self.replay_buffer.add(*transition)
                 agent.buffer.add(*transition)
@@ -147,8 +147,13 @@ class Agent:
 
 
     def rl_to_evo(self, rl_agent: darc.DARC, evo_net: darc.GeneticAgent):
-        for target_param, param in zip(evo_net.actor.parameters(), rl_agent.actor.parameters()):
-            target_param.data.copy_(param.data)
+        eps = random.random()
+        if eps < 0.7:
+            for target_param, param in zip(evo_net.actor.parameters(), rl_agent.actor.parameters()):
+                target_param.data.copy_(param.data)
+        else:
+            for target_param, param in zip(evo_net.actor.parameters(), rl_agent.actor2.parameters()):
+                target_param.data.copy_(param.data)
         evo_net.buffer.reset()
         evo_net.buffer.add_content_of(rl_agent.buffer)
 
