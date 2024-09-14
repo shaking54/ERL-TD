@@ -50,7 +50,7 @@ class Parameters:
         self.gamma = cla.gamma
         self.tau = cla.tau
         self.seed = cla.seed
-        self.batch_size = 64
+        self.batch_size = 256
         self.frac_frames_train = 1.0
         self.use_done_mask = True
         self.buffer_size = 1000000

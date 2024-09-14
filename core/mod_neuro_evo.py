@@ -2,7 +2,7 @@ import random
 import time
 
 import numpy as np
-from core.sac import GeneticAgent, hard_update
+from core.tqc import GeneticAgent, hard_update
 from typing import List
 from core import replay_memory
 import fastrand, math
@@ -534,7 +534,7 @@ class SSNE:
             if ucb:
                 x, _, _, _, _, _, _ = buffer.sample(self.args.batch_size)
                 state = torch.FloatTensor(x).to(self.args.device)
-                actor, log_prob, z, batch_mu, batch_log_sigma  = pop.actor.evaluate(state)
+                actor, log_prob = pop.actor.evaluate(state)
                 Q, _ = -agent.critic(state, actor)
                 std_Q, mean_Q = torch.std_mean(Q, 1)
                 pop_actor_loss = (-(0.5 * std_Q + mean_Q) + agent.alpha.detach() * log_prob).mean()
@@ -543,8 +543,8 @@ class SSNE:
             else:
                 x, _, _, _, _, _, _ = buffer.sample(self.args.batch_size)
                 state = torch.FloatTensor(x).to(self.args.device)
-                actor_target, next_log_prob, z, batch_mu, batch_log_sigma = agent.actor.evaluate(state)
-                actor, next_log_prob, z, batch_mu, batch_log_sigma  = pop.actor.evaluate(state)
+                actor_target, next_log_prob = agent.actor.evaluate(state)
+                actor, next_log_prob  = pop.actor.evaluate(state)
                 pop_actor_loss = ((actor - actor_target.detach()) **2 * 0.5).mean()
                 pop.actor_optim.zero_grad()
                 pop_actor_loss.backward()

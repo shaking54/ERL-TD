@@ -65,7 +65,7 @@ parser.add_argument('-opstat_freq', help='Frequency (in generations) to store op
 parser.add_argument('-save_periodic', help='Save actor, critic and memory periodically', action='store_true')
 parser.add_argument('-next_save', help='Generation save frequency for save_periodic', type=int, default=200)
 parser.add_argument('-K', help='K', type=int, default=1)
-parser.add_argument('-n_nets', help='n_nets', type=int, default=4)
+parser.add_argument('-n_nets', help='n_nets', type=int, default=5)
 parser.add_argument('-bellman_mode', help='bellman_mode', type=str, default="TV")
 parser.add_argument('-mutate_mode', help='mutate_mode', type=str, default="distill_mutate")
 parser.add_argument('-OFF_TYPE', help='OFF_TYPE', type=int, default=1)
@@ -107,7 +107,7 @@ torch.manual_seed(parameters.seed)
 np.random.seed(parameters.seed)
 random.seed(parameters.seed)
 
-from core import mod_utils as utils, agent, td3_agent, ddpg_agent, tqc_agent
+from core import mod_utils as utils, tqc_agent
 tracker = utils.Tracker(parameters, ['erl'], '_score.csv')  # Initiate tracker
 frame_tracker = utils.Tracker(parameters, ['frame_erl'], '_score.csv')  # Initiate tracker
 time_tracker = utils.Tracker(parameters, ['time_erl'], '_score.csv')
@@ -152,13 +152,7 @@ if __name__ == "__main__":
         exit()
 
     # Create Agent
-    if parameters.agent == 'td3':
-        agent = td3_agent.Agent(parameters, env)
-    elif parameters.agent == 'sac':
-        agent = agent.Agent(parameters, env)
-    elif parameters.agent == 'ddpg':
-        agent = ddpg_agent.Agent(parameters, env)
-    elif parameters.agent == 'tqc':
+    if parameters.agent == 'tqc':
         agent = tqc_agent.Agent(parameters, env)
     else:
         raise ValueError('Unknown agent type:', parameters.agent)

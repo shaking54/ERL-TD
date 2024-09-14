@@ -85,7 +85,7 @@ class GeneticAgent:
 
 class TanhNormal(Distribution):
     def __init__(self, normal_mean, normal_std, device):
-        super().__init__()
+        super().__init__(validate_args=False)
         self.normal_mean = normal_mean
         self.normal_std = normal_std
         self.standard_normal = Normal(torch.zeros_like(self.normal_mean, device=device),
@@ -111,22 +111,18 @@ class Actor(nn.Module):
         self.max_action = args.max_action
         self.min_log_std = min_log_std
         self.max_log_std = max_log_std
-        self.net = Mlp(self.state_dim, [256, 256], 2 * self.action_dim)
+        self.net = Mlp(self.state_dim, [512, 512], 2 * self.action_dim)
         self.net.to(self.args.device)
 
     def forward(self, obs):
         mean, log_std = self.net(obs).split([self.action_dim, self.action_dim], dim=1)
         log_std = log_std.clamp(self.min_log_std, self.max_log_std)
 
-        if self.training:
-            std = torch.exp(log_std)
-            tanh_normal = TanhNormal(mean, std, self.args.device)
-            action, pre_tanh = tanh_normal.rsample()
-            log_prob = tanh_normal.log_prob(pre_tanh)
-            log_prob = log_prob.sum(dim=1, keepdim=True)
-        else:  # deterministic eval without log_prob computation
-            action = torch.tanh(mean)
-            log_prob = None
+        std = torch.exp(log_std)
+        tanh_normal = TanhNormal(mean, std, self.args.device)
+        action, pre_tanh = tanh_normal.rsample()
+        log_prob = tanh_normal.log_prob(pre_tanh)
+        log_prob = log_prob.sum(dim=1, keepdim=True)
         return action, log_prob
 
     def select_action(self, obs):
@@ -136,16 +132,11 @@ class Actor(nn.Module):
         return action
 
     def evaluate(self, state):
-        batch_mu, batch_log_sigma = self.forward(state)
-        batch_sigma = torch.exp(batch_log_sigma)
-        dist = Normal(batch_mu, batch_sigma)
-        noise = Normal(torch.tensor([0.] * self.args.action_dim), 1)    #actor dim=4
-
-        z = noise.sample()
-        action = torch.tanh(batch_mu + batch_sigma*z.to(self.args.device))
-        log_prob = (dist.log_prob(batch_mu + batch_sigma * z.to(self.args.device)) -\
-                   torch.log((1 - action.pow(2)) * self.max_action + 1e-7)).sum(-1).unsqueeze(dim=-1)
-        return action * self.max_action, log_prob, z, batch_mu, batch_log_sigma
+        mean, log_std = self.net(state).split([self.action_dim, self.action_dim], dim=1)
+        log_std = log_std.clamp(self.min_log_std, self.max_log_std)
+        action = torch.tanh(mean)
+        log_prob = None
+        return action * self.max_action, log_prob 
 
     def get_novelty(self, batch):
         state_batch, action_batch, _, _, _ = batch
@@ -271,12 +262,12 @@ class TQC(object):
         self.device = args.device
         self.actor = Actor(args).to(self.device)
         
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=6e-4)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=3e-4)
 
         self.critic = Critic(args, n_nets=args.n_nets).to(self.device)
         self.critic_target = Critic(args, n_nets=args.n_nets).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr=6e-4)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr=3e-4)
 
         self.log_alpha = torch.zeros((1,), requires_grad=True, device=self.device)
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=3e-4)
@@ -314,10 +305,10 @@ class TQC(object):
             reward = torch.FloatTensor(r).to(self.device)
 
             with torch.no_grad():
-                sample_next_action, next_log_prob, z, batch_mu, batch_log_sigma = self.actor.evaluate(next_state)
+                new_next_action, next_log_prob = self.actor(next_state)
 
                 # compute and cut quantiles at the next action
-                next_quantiles = self.critic_target(next_state, sample_next_action)
+                next_quantiles = self.critic_target(next_state, new_next_action)
                 sorted_next_quantiles, _ = torch.sort(next_quantiles.reshape(batch_size, -1))
                 sorted_next_quantiles_part = sorted_next_quantiles[:, :self.quantiles_total - self.top_quantiles_to_drop]
 
@@ -334,7 +325,7 @@ class TQC(object):
 
             # Delayed policy updates
             # if it % policy_freq == 0:
-                 # --- Policy and alpha loss ---
+                # --- Policy and alpha loss ---
             new_action, log_pi = self.actor(state)
             alpha_loss = -self.log_alpha * (log_pi + self.target_entropy).detach().mean()
             actor_loss = (self.args.alpha * log_pi - self.critic(state, new_action).mean(2).mean(1, keepdim=True)).mean()
@@ -349,7 +340,7 @@ class TQC(object):
 
             for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-
+        
             # for param, target_param in zip(self.PVN.parameters(), self.PVN_Target.parameters()):
             #     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
