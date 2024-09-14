@@ -429,135 +429,6 @@ class Ensemble_Critics(nn.Module):
 #         return torch.max(out_all, 1)[0] 
 
 
-class Policy_Value_Network(nn.Module):
-
-    def __init__(self, args):
-        super(Policy_Value_Network, self).__init__()
-        self.args = args
-
-        self.policy_size = self.args.ls * self.args.action_dim + self.args.action_dim
-
-        l1 = 400; l2 = 300; l3 = l2
-        self.l1 = l1
-        # Construct input interface (Hidden Layer 1)
-
-        if self.args.use_ln:
-            self.lnorm1 = LayerNorm(l1)
-            self.lnorm2 = LayerNorm(l2)
-            self.lnorm3 = LayerNorm(l1)
-            self.lnorm4 = LayerNorm(l2)
-        self.policy_w_l1 = nn.Linear(self.args.ls + 1, self.args.pr)
-        self.policy_w_l2 = nn.Linear(self.args.pr, self.args.pr)
-        self.policy_w_l3 = nn.Linear(self.args.pr, self.args.pr)
-
-        if self.args.OFF_TYPE == 1 :
-            input_dim = self.args.state_dim + self.args.action_dim
-        else:
-            input_dim = self.args.ls
-
-        self.w_l1 = nn.Linear(input_dim + self.args.pr, l1)
-        # Hidden Layer 2
-
-        self.w_l2 = nn.Linear(l1, l2)
-
-
-        # Out
-        self.w_out = nn.Linear(l3, 1)
-        self.w_out.weight.data.mul_(0.1)
-        self.w_out.bias.data.mul_(0.1)
-
-        self.policy_w_l4 = nn.Linear(self.args.ls + 1, self.args.pr)
-        self.policy_w_l5 = nn.Linear(self.args.pr, self.args.pr)
-        self.policy_w_l6 = nn.Linear(self.args.pr, self.args.pr)
-
-        self.w_l3 = nn.Linear(input_dim + self.args.pr, l1)
-        # Hidden Layer 2
-
-        self.w_l4 = nn.Linear(l1, l2)
-
-        # Out
-        self.w_out_2 = nn.Linear(l3, 1)
-        self.w_out_2.weight.data.mul_(0.1)
-        self.w_out_2.bias.data.mul_(0.1)
-
-        self.to(self.args.device)
-
-    def forward(self,  input ,param):
-        reshape_param = param.reshape([-1,self.args.ls + 1])
-
-        out_p = F.leaky_relu(self.policy_w_l1(reshape_param))
-        out_p = F.leaky_relu(self.policy_w_l2(out_p))
-        out_p = self.policy_w_l3(out_p)
-        out_p = out_p.reshape([-1,self.args.action_dim,self.args.pr])
-        out_p = torch.mean(out_p,dim=1)
-
-        # Hidden Layer 1 (Input Interface)
-        concat_input = torch.cat((input,out_p), 1)
-
-        # Hidden Layer 2
-        out = self.w_l1(concat_input)
-        if self.args.use_ln: out = self.lnorm1(out)
-        out = F.leaky_relu(out)
-        out = self.w_l2(out)
-        if self.args.use_ln: out = self.lnorm2(out)
-        out = F.leaky_relu(out)
-
-        # Output interface
-        out_1 = self.w_out(out)
-
-        out_p = F.leaky_relu(self.policy_w_l4(reshape_param))
-        out_p = F.leaky_relu(self.policy_w_l5(out_p))
-        out_p = self.policy_w_l6(out_p)
-        out_p = out_p.reshape([-1, self.args.action_dim, self.args.pr])
-        out_p = torch.mean(out_p, dim=1)
-
-        # Hidden Layer 1 (Input Interface)
-        concat_input = torch.cat((input, out_p), 1)
-
-        # Hidden Layer 2
-        out = self.w_l3(concat_input)
-        if self.args.use_ln: out = self.lnorm3(out)
-        out = F.leaky_relu(out)
-
-        out = self.w_l4(out)
-        if self.args.use_ln: out = self.lnorm4(out)
-        out = F.leaky_relu(out)
-
-        # Output interface
-        out_2 = self.w_out_2(out)
-
-        
-        return out_1, out_2
-
-    def Q1(self, input, param):
-        reshape_param = param.reshape([-1, self.args.ls + 1])
-
-        out_p = F.leaky_relu(self.policy_w_l1(reshape_param))
-        out_p = F.leaky_relu(self.policy_w_l2(out_p))
-        out_p = self.policy_w_l3(out_p)
-        out_p = out_p.reshape([-1, self.args.action_dim, self.args.pr])
-        out_p = torch.mean(out_p, dim=1)
-
-        # Hidden Layer 1 (Input Interface)
-
-        # out_state = F.elu(self.w_state_l1(input))
-        # out_action = F.elu(self.w_action_l1(action))
-        concat_input = torch.cat((input, out_p), 1)
-
-        # Hidden Layer 2
-        out = self.w_l1(concat_input)
-        if self.args.use_ln: out = self.lnorm1(out)
-        out = F.leaky_relu(out)
-        out = self.w_l2(out)
-        if self.args.use_ln: out = self.lnorm2(out)
-        out = F.leaky_relu(out)
-
-        # Output interface
-        out_1 = self.w_out(out)
-        return out_1
-
-import random
-
 def caculate_prob(score):
 
     X = (score - np.min(score))/(np.max(score)-np.min(score) + 1e-8)
@@ -579,8 +450,8 @@ class TD3(object):
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
 
-        self.critic = Ensemble_Critics(args, n_nets=2).to(self.device)
-        self.critic_target = Ensemble_Critics(args, n_nets=2).to(self.device)
+        self.critic = Ensemble_Critics(args, n_nets=3).to(self.device)
+        self.critic_target = Ensemble_Critics(args, n_nets=3).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         # self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
         self.critic_optimizer = [
@@ -611,15 +482,15 @@ class TD3(object):
         history_target_std = replay_buffer.update(self.args, std_target_Q)
         history_target_std = torch.FloatTensor(np.array(history_target_std)).unsqueeze(-1).to(self.device)
         history_target_std_std, _ = torch.std_mean(history_target_std[:, 1:], 1)
-        over_target_std = torch.where(std_target_Q < 1, std_target_Q**0.9, std_target_Q)
+        under_target_std = torch.where(std_target_Q < 0.5, std_target_Q**1.1, std_target_Q)
         if self.args.bellman_mode == "TV":
-            overstimate = torch.where((history_target_std_std < self.args.std_std_threshold), over_target_std, std_target_Q * 0)
+            underestimate = torch.where((history_target_std_std < self.args.std_std_threshold), under_target_std, std_target_Q * 0)
         elif self.args.bellman_mode == "NV":
-            overstimate = 0
+            underestimate = 0
         elif self.args.bellman_mode == "NT":
-            overstimate = over_target_std
+            underestimate = under_target_std
         
-        return overstimate
+        return underestimate
 
     def train(self,evo_times,all_fitness, all_gen , on_policy_states, on_policy_params, on_policy_discount_rewards,on_policy_actions,replay_buffer, iterations, batch_size=64, discount=0.99, tau=0.005, policy_noise=0.2,
               noise_clip=0.5, policy_freq=2, train_OFN_use_multi_actor= False,all_actor = None):
@@ -647,12 +518,14 @@ class TD3(object):
 
                 # Compute the target Q value
                 quantiles_target_Q1, quantiles_target_Q2 = self.critic_target(next_state, next_action)
-                quantiles_target_Q = torch.min(quantiles_target_Q1, quantiles_target_Q2)
+                # quantiles_target_Q = torch.min(quantiles_target_Q1, quantiles_target_Q2)
 
                 std_target_Q1, mean_target_Q1 = torch.std_mean(quantiles_target_Q1, 1)
                 std_target_Q2, mean_target_Q2 = torch.std_mean(quantiles_target_Q2, 1)
 
-                target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2) + torch.max(std_target_Q1, std_target_Q2)).detach()
+                underestimate = self.approximate_underestimate(torch.mean(std_target_Q1, std_target_Q2), replay_buffer)
+
+                target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2) + underestimate).detach()
 
             for critic, critic_target, critic_optimizer in zip(self.critic.critics, self.critic_target.critics, self.critic_optimizer):
                 # Get current Q estimates
@@ -670,26 +543,26 @@ class TD3(object):
                 critic_optimizer.step()
                 critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
 
-                # Delayed policy updates
-                if it % policy_freq == 0:
+            # Delayed policy updates
+            if it % policy_freq == 0:
 
-                    # Compute actor loss
-                    s_z = state
-                    actor_loss = -1*torch.mean(critic.Q1(state, self.actor.select_action_from_z(s_z)))
-                    # Optimize the actor
-                    self.actor_optimizer.zero_grad()
-                    actor_loss.backward()
-                    nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
-                    self.actor_optimizer.step()
+                # Compute actor loss
+                s_z = state
+                actor_loss = -1*torch.mean(critic.Q1(state, self.actor.select_action_from_z(s_z)))
+                # Optimize the actor
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
+                self.actor_optimizer.step()
 
-                    for param, target_param in zip(critic.parameters(), critic_target.parameters()):
-                        target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+                for param, target_param in zip(critic.parameters(), critic_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-                    for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-                        target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+                for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-                    actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
-                    pre_loss_list.append(0.0)
+                actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
+                pre_loss_list.append(0.0)
             # Get current Q estimates
             # quantiles_current_Q1, quantiles_current_Q2 = self.critic(state, action)
             
