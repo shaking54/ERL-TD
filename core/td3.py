@@ -523,7 +523,8 @@ class TD3(object):
                 std_target_Q1, mean_target_Q1 = torch.std_mean(quantiles_target_Q1, 1)
                 std_target_Q2, mean_target_Q2 = torch.std_mean(quantiles_target_Q2, 1)
 
-                underestimate = self.approximate_underestimate(torch.mean(std_target_Q1, std_target_Q2), replay_buffer)
+                mean_target_std = torch.mean(torch.stack([std_target_Q1, std_target_Q2]), dim=0)
+                underestimate = self.approximate_underestimate(mean_target_std, replay_buffer)
 
                 target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2) + underestimate).detach()
 
@@ -544,25 +545,25 @@ class TD3(object):
                 critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
 
             # Delayed policy updates
-            if it % policy_freq == 0:
+            # if it % policy_freq == 0:
 
-                # Compute actor loss
-                s_z = state
-                actor_loss = -1*torch.mean(critic.Q1(state, self.actor.select_action_from_z(s_z)))
-                # Optimize the actor
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward()
-                nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
-                self.actor_optimizer.step()
+            # Compute actor loss
+            s_z = state
+            actor_loss = -1*torch.mean(self.critic.Q1(state, self.actor.select_action_from_z(s_z)))
+            # Optimize the actor
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
+            self.actor_optimizer.step()
 
-                for param, target_param in zip(critic.parameters(), critic_target.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+                target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-                for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+            for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+                target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-                actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
-                pre_loss_list.append(0.0)
+            actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
+            pre_loss_list.append(0.0)
             # Get current Q estimates
             # quantiles_current_Q1, quantiles_current_Q2 = self.critic(state, action)
             

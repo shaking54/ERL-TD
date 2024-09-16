@@ -5,7 +5,7 @@ import wandb
 os.environ["WANDB_API_KEY"] = "bd4f9ed4f0e350a34c7ef0ea98f697dd7cb718fe"
 # os.environ["WANDB_MODE"] = "offline"
 
-wandb.init(project="Erl-re2",name="TD3 - TD")
+wandb.init(project="Erl-re2",name="TD3-TD")
 
 class Parameters:
     def __init__(self, cla, init=True):
@@ -30,7 +30,7 @@ class Parameters:
         self.mutate_mode = cla.mutate_mode #  distill_mutate gauss_mutate
         # Synchronization
         if cla.env == 'HalfCheetah-v2' or cla.env == 'Hopper-v2' or cla.env == 'Ant-v2' or cla.env == 'Walker2d-v2' or cla.env == "Humanoid-v2":
-            self.rl_to_ea_synch_period = 5
+            self.rl_to_ea_synch_period = 1
         else:
             self.rl_to_ea_synch_period = 10
         
@@ -118,7 +118,7 @@ class Parameters:
         self.EA_actor_alpha = cla.EA_actor_alpha
         self.theta = cla.theta
         self.time_steps = cla.time_steps
-        self.init_steps = 10000
+        self.init_steps = 1000
         self.name = "Steps_"+str(self.time_steps)+"_theta_"+str(self.theta)+ "_eval_"+str(self.num_evals)+"_rs_prob_"+ str(self.prob_reset_and_sup)+"_frac_p_"+str(self.frac)+"_our_M_"+str(self.OFF_TYPE)+"_" + str(self.elite_fraction) +"_"+ str(self.rl_to_ea_synch_period) +"_"+ str(self.pop_size) + "_"+str(self.EA_actor_alpha) + "_"+str(self.pr)+"_noise_"+str(self.TD3_noise)+"_Pavn_detach_"+str(self.detach_z)+"_"+str(self.actor_alpha)+ "_actorloss_MI_sa_s_"+ str(self.state_alpha) + "_random_K_"+ str(self.K)+ "_"+str(cla.env) +  "_"+  str(self.tau)
 
         # self.wandb = wandb.init(project="Erl-re2",name=self.name)
