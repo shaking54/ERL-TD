@@ -5,7 +5,7 @@ from core import replay_memory
 from core import sac
 from scipy.spatial import distance
 from core import replay_memory
-from parameters import Parameters
+from parameters import Parameters, wandb
 import torch
 from core import utils
 import scipy.signal
@@ -88,6 +88,7 @@ class Agent:
                         "evaluate_num \t{}, the ep_r is \t{}, env is \t{}".format(int(self.num_frames / 2000),
                                                                                   eval_res['reward'],
                                                                                   self.args.env_name))
+                    wandb.log({"ep_r": eval_res['reward']})
                 if rl_agent_collect_data:
                     self.rl_agent_frames +=1
             #if self.args.render and is_render: self.env.render()self
