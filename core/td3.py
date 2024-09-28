@@ -337,14 +337,15 @@ class Ensemble_Critics(nn.Module):
         super(Ensemble_Critics, self).__init__()
         self.args = args
 
-        l1 = 400;
-        l2 = 300;
+        l1 = 400
+        l2 = 300
         l3 = l2
 
         self.n_nets = n_nets
-        self.critics = [
-            Critic(args) for _ in range(n_nets)
-        ]
+        # self.critics = [
+        #     Critic(args) for _ in range(n_nets)
+        # ]
+        self.critics = nn.ModuleList([Critic(args) for _ in range(n_nets)])
 
     def forward(self, input, action):
         Q1_value = torch.tensor([]).to(self.args.device)
@@ -442,21 +443,22 @@ def caculate_prob(score):
 class TD3(object):
     def __init__(self, args):
         self.args = args
+        self.n_nets = 2
         self.max_action = 1.0
         self.device = args.device
         self.actor = Actor(args, init=True)
         self.actor_target = Actor(args, init=True)
         self.actor_target.load_state_dict(self.actor.state_dict())
 
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=4e-3)
 
-        self.critic = Ensemble_Critics(args, n_nets=3).to(self.device)
-        self.critic_target = Ensemble_Critics(args, n_nets=3).to(self.device)
+        self.critic = Ensemble_Critics(args, n_nets=self.n_nets).to(self.device)
+        self.critic_target = Ensemble_Critics(args, n_nets=self.n_nets).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
-        # self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
-        self.critic_optimizer = [
-            torch.optim.Adam(critic.parameters(), lr=1e-3) for critic in self.critic.critics
-        ]
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=4e-3)
+        # self.critic_optimizer = [
+        #     torch.optim.Adam(critic.parameters(), lr=1e-3) for critic in self.critic.critics
+        # ]
 
         self.buffer = replay_memory.ReplayMemory(args.individual_bs, args.device)
 
@@ -482,7 +484,7 @@ class TD3(object):
         history_target_std = replay_buffer.update(self.args, std_target_Q)
         history_target_std = torch.FloatTensor(np.array(history_target_std)).unsqueeze(-1).to(self.device)
         history_target_std_std, _ = torch.std_mean(history_target_std[:, 1:], 1)
-        under_target_std = torch.where(std_target_Q < 0.5, std_target_Q**1.1, std_target_Q)
+        under_target_std = torch.where(std_target_Q < 1, std_target_Q**1.2, std_target_Q)
         if self.args.bellman_mode == "TV":
             underestimate = torch.where((history_target_std_std < self.args.std_std_threshold), under_target_std, std_target_Q * 0)
         elif self.args.bellman_mode == "NV":
@@ -523,47 +525,62 @@ class TD3(object):
                 std_target_Q1, mean_target_Q1 = torch.std_mean(quantiles_target_Q1, 1)
                 std_target_Q2, mean_target_Q2 = torch.std_mean(quantiles_target_Q2, 1)
 
-                mean_target_std = torch.mean(torch.stack([std_target_Q1, std_target_Q2]), dim=0)
-                underestimate = self.approximate_underestimate(mean_target_std, replay_buffer)
+                approximate_underestimate_Q1 = self.approximate_underestimate(std_target_Q1, replay_buffer)
+                approximate_underestimate_Q2 = self.approximate_underestimate(std_target_Q2, replay_buffer)
 
-                target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2) + underestimate).detach()
+                target_Q1 = mean_target_Q1 + self.n_nets * approximate_underestimate_Q1
+                target_Q2 = mean_target_Q2 + self.n_nets * approximate_underestimate_Q2
+                
+                target_Q = reward + (done * discount * torch.min(target_Q1, target_Q2)).detach()
+                # target_Q = reward + (done * discount * torch.min(mean_target_Q1, mean_target_Q2)).detach()
 
-            for critic, critic_target, critic_optimizer in zip(self.critic.critics, self.critic_target.critics, self.critic_optimizer):
-                # Get current Q estimates
-                current_Q1, current_Q2 = critic(state, action)
-                # std_current_Q1, mean_current_Q1 = torch.std_mean(quantiles_current_Q1)
-                # std_current_Q2, mean_current_Q2 = torch.std_mean(quantiles_current_Q2)
+            # Get current Q estimates
+            current_Q1, current_Q2 = self.critic(state, action)
 
-                # Compute critic loss
-                critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+            # Compute critic loss
+            
+            critic_loss = F.mse_loss(current_Q1.squeeze(-1), target_Q.expand(-1, self.n_nets)) + F.mse_loss(current_Q2.squeeze(-1), target_Q.expand(-1, self.n_nets))
+            # Optimize the critic
+            self.critic_optimizer.zero_grad()
+            critic_loss.backward()
+            nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
+            self.critic_optimizer.step()
+            critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
 
-                # Optimize the critic
-                critic_optimizer.zero_grad()
-                critic_loss.backward()
-                nn.utils.clip_grad_norm_(critic.parameters(), 10)
-                critic_optimizer.step()
-                critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
+            # for critic, critic_target, critic_optimizer in zip(self.critic.critics, self.critic_target.critics, self.critic_optimizer):
+            #     # Get current Q estimates
+            #     current_Q1, current_Q2 = critic(state, action)
+
+            #     # Compute critic loss
+            #     critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+
+            #     # Optimize the critic
+            #     critic_optimizer.zero_grad()
+            #     critic_loss.backward()
+            #     nn.utils.clip_grad_norm_(critic.parameters(), 10)
+            #     critic_optimizer.step()
+            #     critic_loss_list.append(critic_loss.cpu().data.numpy().flatten())
 
             # Delayed policy updates
-            # if it % policy_freq == 0:
+            if it % policy_freq == 0:
 
-            # Compute actor loss
-            s_z = state
-            actor_loss = -1*torch.mean(self.critic.Q1(state, self.actor.select_action_from_z(s_z)))
-            # Optimize the actor
-            self.actor_optimizer.zero_grad()
-            actor_loss.backward()
-            nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
-            self.actor_optimizer.step()
+                # Compute actor loss
+                actor_loss = -1*torch.mean(self.critic.Q1(state, self.actor(state)))
+                # Optimize the actor
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
+                self.actor_optimizer.step()
 
-            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+                for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-            for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-                target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+                for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-            actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
-            pre_loss_list.append(0.0)
+                actor_loss_list.append(actor_loss.cpu().data.numpy().flatten())
+                pre_loss_list.append(0.0)
+
             # Get current Q estimates
             # quantiles_current_Q1, quantiles_current_Q2 = self.critic(state, action)
             
