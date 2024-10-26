@@ -6,6 +6,7 @@ from torch.autograd import grad
 from parameters import Parameters
 from core import replay_memory
 from core.mod_utils import is_lnorm_key
+from core.networks import Dense, orthogonal_init, he_normal_init, DDPGEncoder, TanhPolicy, LinearCritic
 import numpy as np
 from torch.distributions import Normal
 
@@ -26,9 +27,9 @@ class GeneticAgent:
 
         self.args = args
 
-        self.actor = Actor(args)
-        self.old_actor = Actor(args)
-        self.temp_actor = Actor(args)
+        self.actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim, device=args.device).to(args.device)
+        self.old_actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim, device=args.device).to(args.device)
+        self.temp_actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim, device=args.device).to(args.device)
         self.actor_optim = Adam(self.actor.parameters(), lr=1e-4)
 
         self.buffer = replay_memory.ReplayMemory(self.args.individual_bs, args.device)
@@ -333,6 +334,70 @@ class Critic(nn.Module):
         return out_1
 
 
+class DDPGActor(nn.Module):
+    def __init__(self, args, block_type, num_blocks, hidden_dim, action_dim, dtype=torch.float32, device="cpu"):
+        super(DDPGActor, self).__init__()
+        self.args = args
+        self.device = device
+        self.encoder =  DDPGEncoder(block_type, num_blocks, hidden_dim, dtype=dtype, device=self.device)
+        self.predictor = TanhPolicy(action_dim, device=self.device)
+
+    def forward(self, observations):
+        observations = observations.to(self.device)
+        z = self.encoder(observations)
+        action = self.predictor(z)
+        return action
+
+    def evaluate(self, state):
+        action = self.forward(state)
+        log_prob = Normal(0, 1).log_prob(action).sum(dim=-1)
+        return action * self.args.max_action, log_prob
+
+    def select_action(self, state):
+        state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
+        return self.forward(state).cpu().data.numpy().flatten()
+
+    def select_action_from_z(self, s_z):
+        action = self.forward(s_z)
+        return action
+
+    def Q1(self, input, action):
+        return self.encoder(input, action)  
+
+class DDPGCritic(nn.Module):
+    def __init__(self, args, block_type, num_blocks, hidden_dim, dtype=torch.float32, device="cpu"):
+        super(DDPGCritic, self).__init__()
+        self.args = args
+        self.device = device
+        self.encoder = DDPGEncoder(block_type, num_blocks, hidden_dim, dtype=dtype, device=self.device)
+        self.predictor = LinearCritic(device=self.device)
+
+    def forward(self, observations, actions):
+        observations, actions = observations.to(self.device), actions.to(self.device)
+        inputs = torch.cat([observations, actions], dim=1)
+        z = self.encoder(inputs)
+        q = self.predictor(z)
+        return q
+    
+    def Q1(self, input, action):
+        return self.encoder(input, action)
+
+class TD3_Critic(nn.Module):
+    def __init__(self, args, block_type, num_blocks, hidden_dim, dtype=torch.float32, device="cpu"):
+        super(TD3_Critic, self).__init__()
+        self.args = args
+        self.Critic1 = DDPGCritic(args, block_type, num_blocks, hidden_dim, dtype, device)
+        self.Critic2 = DDPGCritic(args, block_type, num_blocks, hidden_dim, dtype, device)
+
+    def forward(self, observations, actions):
+        q1 = self.Critic1(observations, actions)
+        q2 = self.Critic2(observations, actions)
+        return q1, q2
+    
+    def Q1(self, input, action):
+        return self.Critic1(input, action)
+    
+
 # class Critic(nn.Module):
 
 #     def __init__(self, args, n_nets = 3):
@@ -530,32 +595,18 @@ class TD3(object):
         self.args = args
         self.max_action = 1.0
         self.device = args.device
-        self.actor = Actor(args, init=True)
-        self.actor_target = Actor(args, init=True)
+        self.actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim, device=self.device).to(self.device)
+        self.actor_target = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim, device=self.device).to(self.device)
         self.actor_target.load_state_dict(self.actor.state_dict())
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
 
-        self.critic = Critic(args).to(self.device)
-        self.critic_target = Critic(args).to(self.device)
+        self.critic = TD3_Critic(args, block_type='residual', num_blocks=4, hidden_dim=256, device=self.device).to(self.device)
+        self.critic_target = TD3_Critic(args, block_type='residual', num_blocks=4, hidden_dim=256, device=self.device).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
 
         self.buffer = replay_memory.ReplayMemory(args.individual_bs, args.device)
-
-
-        # self.PVN = Policy_Value_Network(args).to(self.device)
-        # self.PVN_Target = Policy_Value_Network(args).to(self.device)
-        # self.PVN_Target.load_state_dict(self.PVN.state_dict())
-        # self.PVN_optimizer = torch.optim.Adam([{'params': self.PVN.parameters()}],lr=1e-3)
-
-        # self.state_embedding = shared_state_embedding(args)
-        # self.state_embedding_target = shared_state_embedding(args)
-        # self.state_embedding_target.load_state_dict(self.state_embedding.state_dict())
-      
-      
-        # self.old_state_embedding = shared_state_embedding(args)
-        # self.state_embedding_optimizer = torch.optim.Adam(self.state_embedding.parameters(), lr=1e-3)
 
     def select_action(self, state):
         state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
