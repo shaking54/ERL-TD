@@ -85,7 +85,7 @@ class SSNE:
                                      rl_agent_collect_data=False)
             for state in eval_res['state_list']:
                 logger.info("the state is {} {}".format(state[0], state[1]))
-
+    
     def crossover_inplace(self, gene1: GeneticAgent, gene2: GeneticAgent):
         # Evaluate the parents
         trials = 5

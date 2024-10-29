@@ -28,6 +28,7 @@ class Dense(nn.Module):
         self.bias = None
 
         self.kernel_init = kernel_init
+        self.to(DEVICE)
 
     def forward(self, x):
         # Dynamically set in_features based on the input
@@ -35,11 +36,11 @@ class Dense(nn.Module):
 
         # Initialize weight and bias only once
         if self.weight is None:
-            self.weight = nn.Parameter(torch.empty((in_features, self.out_features)))
+            self.weight = nn.Parameter(torch.empty((in_features, self.out_features))).to(DEVICE)
             self.kernel_init(self.weight)
 
         if self.bias is None:
-            self.bias = nn.Parameter(torch.empty(self.out_features))
+            self.bias = nn.Parameter(torch.empty(self.out_features)).to(DEVICE)
             nn.init.zeros_(self.bias)
 
         # Perform the linear transformation
@@ -52,13 +53,13 @@ class Dense(nn.Module):
         return output
 
 class MLPBlock(nn.Module):
-    def __init__(self, hidden_dim, dtype=torch.float32, device="cpu"):
+    def __init__(self, hidden_dim, dtype=torch.float32):
         super(MLPBlock, self).__init__()
 
-        self.fc1 = Dense(hidden_dim, kernel_init=orthogonal_init(np.sqrt(2.0)))
-        self.fc2 = Dense(hidden_dim, kernel_init=orthogonal_init(np.sqrt(2.0)))
+        self.fc1 = Dense(hidden_dim, kernel_init=orthogonal_init(np.sqrt(2.0))).to(DEVICE)
+        self.fc2 = Dense(hidden_dim, kernel_init=orthogonal_init(np.sqrt(2.0))).to(DEVICE)
         self.dtype = dtype
-        self.device = device
+        self.to(DEVICE)
 
     def forward(self, x):
         x = x.to(DEVICE)
@@ -70,12 +71,13 @@ class MLPBlock(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, hidden_dim, dtype=torch.float32, device="cpu"):
+    def __init__(self, hidden_dim, dtype=torch.float32):
         super(ResidualBlock, self).__init__()
         self.norm = nn.LayerNorm(hidden_dim)
-        self.fc1 = Dense(hidden_dim * 4, kernel_init=he_normal_init())
-        self.fc2 = Dense(hidden_dim, kernel_init=he_normal_init())
+        self.fc1 = Dense(hidden_dim * 4, kernel_init=he_normal_init()).to(DEVICE)
+        self.fc2 = Dense(hidden_dim, kernel_init=he_normal_init()).to(DEVICE)
         self.dtype = dtype
+        self.to(DEVICE)
        
     def forward(self, x):
         res = x.to(DEVICE)
@@ -85,10 +87,10 @@ class ResidualBlock(nn.Module):
         return res + x
 
 class TanhPolicy(nn.Module):
-    def __init__(self, action_dim, kernel_init_scale=1.0, device="cpu"):
+    def __init__(self, action_dim, kernel_init_scale=1.0):
         super(TanhPolicy, self).__init__()
-        self.fc = Dense(action_dim, kernel_init=he_normal_init())
-        self.device = device
+        self.fc = Dense(action_dim, kernel_init=he_normal_init()).to(DEVICE)
+        self.to(DEVICE)
 
     def forward(self, inputs):
         inputs = inputs.to(DEVICE)
@@ -97,11 +99,11 @@ class TanhPolicy(nn.Module):
 
 
 class LinearCritic(nn.Module):
-    def __init__(self, kernel_init_scale=1.0, dtype=torch.float32, device="cpu"):
+    def __init__(self, kernel_init_scale=1.0, dtype=torch.float32):
         super(LinearCritic, self).__init__()
-        self.fc = Dense(1, kernel_init=orthogonal_init(kernel_init_scale)).to(device)
+        self.fc = Dense(1, kernel_init=orthogonal_init(kernel_init_scale)).to(DEVICE)
         self.dtype = dtype
-        self.device = device
+        self.to(DEVICE)
 
     def forward(self, inputs):
         inputs = inputs.to(DEVICE)
@@ -110,38 +112,39 @@ class LinearCritic(nn.Module):
         return value
 
 class DDPGEncoder(nn.Module):
-    def __init__(self, block_type, num_blocks, hidden_dim, dtype=torch.float32, device="cpu"):
+    def __init__(self, block_type, num_blocks, hidden_dim, dtype=torch.float32):
         super(DDPGEncoder, self).__init__()
         self.block_type = block_type
         self.num_blocks = num_blocks
         self.hidden_dim = hidden_dim
         self.dtype = dtype
-        self.device = device
 
         if self.block_type == "mlp":
-            self.encoder = MLPBlock(self.hidden_dim, dtype=self.dtype).to(self.device)
+            self.encoder = MLPBlock(self.hidden_dim, dtype=self.dtype).to(DEVICE)
 
         elif self.block_type == "residual":
-            layers = [Dense(self.hidden_dim).to(self.device)]
+            layers = [Dense(self.hidden_dim).to(DEVICE)]
             for _ in range(self.num_blocks):
-                layers.append(ResidualBlock(self.hidden_dim, dtype=self.dtype).to(self.device))
-            layers.append(nn.LayerNorm(self.hidden_dim).to(self.device))
-            self.encoder = nn.Sequential(*layers)
+                layers.append(ResidualBlock(self.hidden_dim, dtype=self.dtype).to(DEVICE))
+            layers.append(nn.LayerNorm(self.hidden_dim).to(DEVICE))
+            self.encoder = nn.Sequential(*layers).to(DEVICE)
+
+        self.to(DEVICE)
 
     def forward(self, x):
-        x = x.to(self.device)
+        x = x.to(DEVICE)
         x = self.encoder(x)
         return x
 
 class DDPGActor(nn.Module):
     def __init__(self, block_type, num_blocks, hidden_dim, action_dim, dtype=torch.float32, device="cpu"):
         super(DDPGActor, self).__init__()
-        self.device = device
-        self.encoder =  DDPGEncoder(block_type, num_blocks, hidden_dim, dtype=dtype, device=self.device)
-        self.predictor = TanhPolicy(action_dim, device=self.device)
+        self.encoder =  DDPGEncoder(block_type, num_blocks, hidden_dim, dtype=dtype, device=DEVICE).to(DEVICE)
+        self.predictor = TanhPolicy(action_dim, device=DEVICE).to(DEVICE)
+        self.to(DEVICE)
 
     def forward(self, observations):
-        observations = observations.to(self.device)
+        observations = observations.to(DEVICE)
         z = self.encoder(observations)
         action = self.predictor(z)
         return action
@@ -150,12 +153,12 @@ class DDPGActor(nn.Module):
 class DDPGCritic(nn.Module):
     def __init__(self, block_type, num_blocks, hidden_dim, dtype=torch.float32, device="cpu"):
         super(DDPGCritic, self).__init__()
-        self.device = device
-        self.encoder = DDPGEncoder(block_type, num_blocks, hidden_dim, dtype=dtype, device=self.device)
-        self.predictor = LinearCritic(device=self.device)
+        self.encoder = DDPGEncoder(block_type, num_blocks, hidden_dim, dtype=dtype)
+        self.predictor = LinearCritic()
+        self.to(DEVICE)
 
     def forward(self, observations, actions):
-        observations, actions = observations.to(self.device), actions.to(self.device)
+        observations, actions = observations.to(DEVICE), actions.to(DEVICE)
         inputs = torch.cat([observations, actions], dim=1)
         z = self.encoder(inputs)
         q = self.predictor(z)
@@ -167,9 +170,8 @@ class DDPGClippedDoubleCritic(nn.Module):
         super(DDPGClippedDoubleCritic, self).__init__()
         self.num_qs = num_qs
         self.critics = nn.ModuleList([DDPGCritic(block_type, num_blocks, hidden_dim, dtype=dtype, device=device) for _ in range(self.num_qs)])
-        self.device = device
-
+        
     def forward(self, observations, actions):
-        observations, actions = observations.to(self.device), actions.to(self.device)
+        observations, actions = observations.to(DEVICE), actions.to(DEVICE)
         qs = torch.stack([critic(observations, actions) for critic in self.critics], dim=0)
         return qs

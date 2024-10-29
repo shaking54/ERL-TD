@@ -24,12 +24,10 @@ def hard_update(target, source):
 
 class GeneticAgent:
     def __init__(self, args: Parameters):
-
         self.args = args
-
-        self.actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim, device=args.device).to(args.device)
-        self.old_actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim, device=args.device).to(args.device)
-        self.temp_actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim, device=args.device).to(args.device)
+        self.actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim).to(args.device)
+        self.old_actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim).to(args.device)
+        self.temp_actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim).to(args.device)
         self.actor_optim = Adam(self.actor.parameters(), lr=1e-4)
 
         self.buffer = replay_memory.ReplayMemory(self.args.individual_bs, args.device)
@@ -335,12 +333,13 @@ class Critic(nn.Module):
 
 
 class DDPGActor(nn.Module):
-    def __init__(self, args, block_type, num_blocks, hidden_dim, action_dim, dtype=torch.float32, device="cpu"):
+    def __init__(self, args, block_type, num_blocks, hidden_dim, action_dim, dtype=torch.float32):
         super(DDPGActor, self).__init__()
         self.args = args
-        self.device = device
-        self.encoder =  DDPGEncoder(block_type, num_blocks, hidden_dim, dtype=dtype, device=self.device)
-        self.predictor = TanhPolicy(action_dim, device=self.device)
+        self.device = args.device
+        self.encoder =  DDPGEncoder(block_type, num_blocks, hidden_dim, dtype=dtype).to(self.args.device)
+        self.predictor = TanhPolicy(action_dim).to(self.args.device)
+        self.to(self.device)
 
     def forward(self, observations):
         observations = observations.to(self.device)
@@ -365,15 +364,15 @@ class DDPGActor(nn.Module):
         return self.encoder(input, action)  
 
 class DDPGCritic(nn.Module):
-    def __init__(self, args, block_type, num_blocks, hidden_dim, dtype=torch.float32, device="cpu"):
+    def __init__(self, args, block_type, num_blocks, hidden_dim, dtype=torch.float32):
         super(DDPGCritic, self).__init__()
         self.args = args
-        self.device = device
-        self.encoder = DDPGEncoder(block_type, num_blocks, hidden_dim, dtype=dtype, device=self.device)
-        self.predictor = LinearCritic(device=self.device)
+        self.encoder = DDPGEncoder(block_type, num_blocks, hidden_dim, dtype=dtype).to(args.device)
+        self.predictor = LinearCritic().to(args.device)
+        self.to(args.device)
 
     def forward(self, observations, actions):
-        observations, actions = observations.to(self.device), actions.to(self.device)
+        observations, actions = observations.to(self.args.device), actions.to(self.args.device)
         inputs = torch.cat([observations, actions], dim=1)
         z = self.encoder(inputs)
         q = self.predictor(z)
@@ -383,12 +382,13 @@ class DDPGCritic(nn.Module):
         return self.encoder(input, action)
 
 class TD3_Critic(nn.Module):
-    def __init__(self, args, block_type, num_blocks, hidden_dim, dtype=torch.float32, device="cpu"):
+    def __init__(self, args, block_type, num_blocks, hidden_dim, dtype=torch.float32):
         super(TD3_Critic, self).__init__()
         self.args = args
-        self.Critic1 = DDPGCritic(args, block_type, num_blocks, hidden_dim, dtype, device)
-        self.Critic2 = DDPGCritic(args, block_type, num_blocks, hidden_dim, dtype, device)
-
+        self.Critic1 = DDPGCritic(args, block_type, num_blocks, hidden_dim, dtype).to(args.device)
+        self.Critic2 = DDPGCritic(args, block_type, num_blocks, hidden_dim, dtype).to(args.device)
+        self.to(args.device)
+        
     def forward(self, observations, actions):
         q1 = self.Critic1(observations, actions)
         q2 = self.Critic2(observations, actions)
@@ -595,14 +595,14 @@ class TD3(object):
         self.args = args
         self.max_action = 1.0
         self.device = args.device
-        self.actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim, device=self.device).to(self.device)
-        self.actor_target = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim, device=self.device).to(self.device)
+        self.actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim).to(self.device)
+        self.actor_target = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim).to(self.device)
         self.actor_target.load_state_dict(self.actor.state_dict())
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
 
-        self.critic = TD3_Critic(args, block_type='residual', num_blocks=4, hidden_dim=256, device=self.device).to(self.device)
-        self.critic_target = TD3_Critic(args, block_type='residual', num_blocks=4, hidden_dim=256, device=self.device).to(self.device)
+        self.critic = TD3_Critic(args, block_type='residual', num_blocks=4, hidden_dim=256).to(self.device)
+        self.critic_target = TD3_Critic(args, block_type='residual', num_blocks=4, hidden_dim=256).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
 
