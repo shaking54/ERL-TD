@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np 
+import math
 from torch.nn import init
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -11,7 +12,7 @@ def he_normal_init():
     """He normal initialization for weights."""
     return nn.init.kaiming_normal_
 
-def orthogonal_init(scale=1.0):
+def orthogonal_init(scale=np.sqrt(2.0)):
     """Orthogonal initialization for weights."""
     def init(tensor):
         nn.init.orthogonal_(tensor, gain=scale)
@@ -27,30 +28,25 @@ class Dense(nn.Module):
         self.weight = None
         self.bias = None
 
+        self.use_bias = True
+
         self.kernel_init = kernel_init
         self.to(DEVICE)
 
+    def initialize_layer(self, input_shape):
+        in_features = input_shape[-1]
+        self.linear = nn.Linear(in_features, self.features, bias=self.use_bias)
+        
+        # Initialize with LeCun normal (matches JAX default)
+        self.kernel_init(self.linear.weight)
+        if self.use_bias:
+            nn.init.zeros_(self.linear.bias)
+
     def forward(self, x):
-        # Dynamically set in_features based on the input
-        in_features = x.size(-1)
-
-        # Initialize weight and bias only once
-        if self.weight is None:
-            self.weight = nn.Parameter(torch.empty((in_features, self.out_features))).to(DEVICE)
-            self.kernel_init(self.weight)
-
-        if self.bias is None:
-            self.bias = nn.Parameter(torch.empty(self.out_features)).to(DEVICE)
-            nn.init.zeros_(self.bias)
-
-        # Perform the linear transformation
-        output = x @ self.weight + self.bias
-
-        # Apply activation if specified
-        if self.activation is not None:
-            output = self.activation(output)
-
-        return output
+        # Lazy initialization on first forward pass
+        if self.linear is None:
+            self.initialize_layer(x.shape)
+        return self.linear(x)
 
 class MLPBlock(nn.Module):
     def __init__(self, hidden_dim, dtype=torch.float32):
@@ -68,7 +64,6 @@ class MLPBlock(nn.Module):
         x = self.fc2(x)
         x = F.relu(x)
         return x
-
 
 class ResidualBlock(nn.Module):
     def __init__(self, hidden_dim, dtype=torch.float32):
