@@ -30,12 +30,14 @@ class Dense(nn.Module):
 
         self.use_bias = True
 
+        self.linear = None
+
         self.kernel_init = kernel_init
         self.to(DEVICE)
 
     def initialize_layer(self, input_shape):
         in_features = input_shape[-1]
-        self.linear = nn.Linear(in_features, self.features, bias=self.use_bias)
+        self.linear = nn.Linear(in_features, self.out_features, bias=self.use_bias)
         
         # Initialize with LeCun normal (matches JAX default)
         self.kernel_init(self.linear.weight)
