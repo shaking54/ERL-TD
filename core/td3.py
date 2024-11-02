@@ -25,9 +25,9 @@ def hard_update(target, source):
 class GeneticAgent:
     def __init__(self, args: Parameters):
         self.args = args
-        self.actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim).to(args.device)
-        self.old_actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim).to(args.device)
-        self.temp_actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim).to(args.device)
+        self.actor = DDPGActor(args, block_type='residual', num_blocks=1, hidden_dim=128, action_dim=args.action_dim).to(self.args.device)
+        self.old_actor = DDPGActor(args, block_type='residual', num_blocks=1, hidden_dim=128, action_dim=args.action_dim).to(self.args.device)
+        self.temp_actor = DDPGActor(args, block_type='residual', num_blocks=1, hidden_dim=128, action_dim=args.action_dim).to(self.args.device)
         self.actor_optim = Adam(self.actor.parameters(), lr=1e-4)
 
         self.buffer = replay_memory.ReplayMemory(self.args.individual_bs, args.device)
@@ -595,16 +595,15 @@ class TD3(object):
         self.args = args
         self.max_action = 1.0
         self.device = args.device
-        self.actor = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim).to(self.device)
-        self.actor_target = DDPGActor(args, block_type='residual', num_blocks=4, hidden_dim=256, action_dim=args.action_dim).to(self.device)
+        self.actor = DDPGActor(args, block_type='residual', num_blocks=2, hidden_dim=128, action_dim=args.action_dim).to(self.device)
+        self.actor_target = DDPGActor(args, block_type='residual', num_blocks=2, hidden_dim=128, action_dim=args.action_dim).to(self.device)
         self.actor_target.load_state_dict(self.actor.state_dict())
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=3e-4)
 
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
-
-        self.critic = TD3_Critic(args, block_type='residual', num_blocks=4, hidden_dim=256).to(self.device)
-        self.critic_target = TD3_Critic(args, block_type='residual', num_blocks=4, hidden_dim=256).to(self.device)
+        self.critic = TD3_Critic(args, block_type='residual', num_blocks=4, hidden_dim=512).to(self.device)
+        self.critic_target = TD3_Critic(args, block_type='residual', num_blocks=4, hidden_dim=512).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
 
         self.buffer = replay_memory.ReplayMemory(args.individual_bs, args.device)
 
